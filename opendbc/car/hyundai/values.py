@@ -709,6 +709,13 @@ HYUNDAI_ECU_MANUFACTURING_DATE = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER
 
 HYUNDAI_VERSION_RESPONSE = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER + 0x40])
 
+HYUNDAI_AVANTE_ENGINE_VERSION_REQUEST = b'\x21\x91'
+HYUNDAI_AVANTE_ENGINE_VERSION_RESPONSE = b'\x61\x91'
+HYUNDAI_AVANTE_EPS_ID_REQUEST = b'\x21\x94'
+HYUNDAI_AVANTE_EPS_ID_RESPONSE = b'\x61\x94'
+HYUNDAI_AVANTE_EPS_VERSION_REQUEST = b'\x21\x98'
+HYUNDAI_AVANTE_EPS_VERSION_RESPONSE = b'\x61\x98'
+
 # Regex patterns for parsing platform code, FW date, and part number from FW versions
 PLATFORM_CODE_FW_PATTERN = re.compile(b'((?<=' + HYUNDAI_VERSION_REQUEST_LONG[1:] +
                                       b')[A-Z]{2}[A-Za-z0-9]{0,2})')
@@ -749,6 +756,41 @@ FW_QUERY_CONFIG = FwQueryConfig(
       [HYUNDAI_VERSION_RESPONSE],
       bus=1,
       obd_multiplexing=False,
+    ),
+
+    # Legacy KWP-on-CAN identifiers for Hyundai Avante MD 2012.
+    Request(
+      [HYUNDAI_AVANTE_ENGINE_VERSION_REQUEST],
+      [HYUNDAI_AVANTE_ENGINE_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.engine],
+      bus=0,
+    ),
+    Request(
+      [HYUNDAI_AVANTE_ENGINE_VERSION_REQUEST],
+      [HYUNDAI_AVANTE_ENGINE_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.engine],
+    ),
+    Request(
+      [HYUNDAI_AVANTE_EPS_ID_REQUEST],
+      [HYUNDAI_AVANTE_EPS_ID_RESPONSE],
+      whitelist_ecus=[Ecu.eps],
+      bus=0,
+    ),
+    Request(
+      [HYUNDAI_AVANTE_EPS_ID_REQUEST],
+      [HYUNDAI_AVANTE_EPS_ID_RESPONSE],
+      whitelist_ecus=[Ecu.eps],
+    ),
+    Request(
+      [HYUNDAI_AVANTE_EPS_VERSION_REQUEST],
+      [HYUNDAI_AVANTE_EPS_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.eps],
+      bus=0,
+    ),
+    Request(
+      [HYUNDAI_AVANTE_EPS_VERSION_REQUEST],
+      [HYUNDAI_AVANTE_EPS_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.eps],
     ),
 
     # CAN & CAN FD query to understand the three digit date code

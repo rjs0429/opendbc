@@ -9,6 +9,15 @@ Ecu = CarParams.Ecu
 
 
 FW_VERSIONS = {
+  CAR.HYUNDAI_AVANTE_2012: {
+    (Ecu.engine, 0x7e0, None): [
+      b'GIMD-BD-6QF16C00',
+    ],
+    (Ecu.eps, 0x7d4, None): [
+      b'LMDPS',
+      bytes.fromhex('4c4d445053084d5253430000000011010103014d44013a00ffffffffffffffffffffffffffffffffffffffffffffffff'),
+    ],
+  },
   CAR.HYUNDAI_AZERA_6TH_GEN: {
     (Ecu.fwdRadar, 0x7d0, None): [
       b'\xf1\x00IG__ SCC F-CU-      1.00 1.00 99110-G8100         ',
