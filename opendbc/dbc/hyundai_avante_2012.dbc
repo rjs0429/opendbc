@@ -250,7 +250,7 @@ BO_ 672 EMS5: 8 XXX
 
 
 BO_ 688 SAS1: 5 XXX
-    SG_ SAS_Angle : 0|16@1+ (0.1,0) [-3276.8|3276.7] "Deg" XXX
+    SG_ SAS_Angle : 0|16@1- (0.1,0) [-3276.8|3276.7] "Deg" XXX
     SG_ SAS_Speed : 16|8@1+ (4,0) [0|1016] "" XXX
     SG_ SAS_Stat : 24|8@1+ (1,0) [0|255] "" XXX
     SG_ MsgCount : 32|4@1+ (1,0) [0|15] "" XXX
@@ -477,5 +477,4 @@ BO_ 1680 CLU2: 8 XXX
     SG_ CF_Clu_LkasDispMode : 56|2@1+ (1,0) [0|3] "" XXX
     SG_ CF_Clu_AutoLightLevel : 58|2@1+ (1,0) [0|3] "" XXX
     SG_ CF_Clu_SunRoofOpenState : 60|1@1+ (1,0) [0|1] "" XXX
-
 

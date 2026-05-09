@@ -128,6 +128,9 @@ class CarController(CarControllerBase):
   def create_can_msgs(self, apply_steer_req, apply_torque, torque_fault, set_speed_in_units, accel, stopping, hud_control, actuators, CS, CC):
     can_sends = []
 
+    if self.car_fingerprint == CAR.HYUNDAI_AVANTE_2012:
+      return can_sends
+
     # HUD messages
     sys_warning, sys_state, left_lane_warning, right_lane_warning = process_hud_alert(CC.enabled, self.car_fingerprint,
                                                                                       hud_control)
