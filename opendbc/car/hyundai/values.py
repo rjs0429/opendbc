@@ -175,6 +175,12 @@ class HyundaiCanFDPlatformConfig(PlatformConfig):
 
 class CAR(Platforms):
   # Hyundai
+  HYUNDAI_AVANTE_2012 = HyundaiPlatformConfig(
+    [HyundaiCarDocs("Hyundai Avante 2012", "Custom developer port", car_parts=CarParts.common([CarHarness.custom]))],
+    CarSpecs(mass=1525, wheelbase=2.70, steerRatio=14.2, tireStiffnessFactor=0.385),
+    dbc_dict={Bus.pt: "hyundai_avante_2012"},
+    flags=HyundaiFlags.LEGACY | HyundaiFlags.UNSUPPORTED_LONGITUDINAL,
+  )
   HYUNDAI_AZERA_6TH_GEN = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Azera 2022", "All", car_parts=CarParts.common([CarHarness.hyundai_k]))],
     CarSpecs(mass=1600, wheelbase=2.885, steerRatio=14.5),
