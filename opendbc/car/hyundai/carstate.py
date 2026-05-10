@@ -20,28 +20,6 @@ ENABLE_BUTTONS = (Buttons.RES_ACCEL, Buttons.SET_DECEL, Buttons.CANCEL)
 BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: ButtonType.decelCruise,
                 Buttons.GAP_DIST: ButtonType.gapAdjustCruise, Buttons.CANCEL: ButtonType.cancel}
 
-AVANTE_GEAR_SHIFTER_VALUES = {
-  0: "P",
-  5: "D",
-  6: "N",
-  7: "R",
-  8: "S",
-  12: "T",
-}
-
-AVANTE_CUR_GR_VALUES = {
-  0: "P",
-  1: "D", 2: "D", 3: "D", 4: "D",
-  5: "D", 6: "D", 7: "D", 8: "D",
-  14: "R",
-}
-AVANTE_VALID_SAS_STAT = 7
-AVANTE_MAX_WHEEL_SPEED_KPH = 220.
-AVANTE_MAX_WHEEL_SPEED_SPREAD_KPH = 20.
-AVANTE_MAX_STEERING_TORQUE_NM = 10.
-AVANTE_MAX_STEERING_EPS_TORQUE = 100.
-AVANTE_STEERING_PRESSED_THRESHOLD_NM = 1.5
-
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -56,9 +34,7 @@ class CarState(CarStateBase):
                           "GEAR_ALT" if CP.flags & HyundaiFlags.CANFD_ALT_GEARS else \
                           "GEAR_ALT_2" if CP.flags & HyundaiFlags.CANFD_ALT_GEARS_2 else \
                           "GEAR_SHIFTER"
-    if CP.carFingerprint == CAR.HYUNDAI_AVANTE_2012:
-      self.shifter_values = AVANTE_GEAR_SHIFTER_VALUES
-    elif CP.flags & HyundaiFlags.CANFD:
+    if CP.flags & HyundaiFlags.CANFD:
       self.shifter_values = can_define.dv[self.gear_msg_canfd]["GEAR"]
     elif CP.flags & (HyundaiFlags.HYBRID | HyundaiFlags.EV):
       self.shifter_values = can_define.dv["ELECT_GEAR"]["Elect_Gear_Shifter"]
@@ -85,9 +61,6 @@ class CarState(CarStateBase):
     self.cluster_speed = 0
     self.cluster_speed_counter = CLUSTER_SAMPLE_RATE
 
-    self.avante_last_wheel_speeds = None
-    self.avante_steering_angle_deg = 0.
-
     self.params = CarControllerParams(CP)
 
   def recent_button_interaction(self) -> bool:
@@ -98,10 +71,6 @@ class CarState(CarStateBase):
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
-
-    if self.CP.carFingerprint == CAR.HYUNDAI_AVANTE_2012:
-      return self.update_avante_2012(cp)
-
     cp_cam = can_parsers[Bus.cam]
 
     if self.CP.flags & HyundaiFlags.CANFD:
@@ -235,75 +204,6 @@ class CarState(CarStateBase):
 
     return ret
 
-  def update_avante_2012(self, cp) -> structs.CarState:
-    ret = structs.CarState()
-
-    self.is_metric = cp.vl["CLU1"]["CF_Clu_SPEED_UNIT"] == 0
-    speed_conv = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
-
-    wheel_speeds = (
-      cp.vl["TCS5"]["WHEEL_FL"],
-      cp.vl["TCS5"]["WHEEL_FR"],
-      cp.vl["TCS5"]["WHEEL_RL"],
-      cp.vl["TCS5"]["WHEEL_RR"],
-    )
-    wheel_speed_spread = max(wheel_speeds) - min(wheel_speeds)
-    wheel_speeds_valid = max(wheel_speeds) <= AVANTE_MAX_WHEEL_SPEED_KPH and wheel_speed_spread <= AVANTE_MAX_WHEEL_SPEED_SPREAD_KPH
-    if wheel_speeds_valid:
-      self.avante_last_wheel_speeds = wheel_speeds
-    elif self.avante_last_wheel_speeds is not None:
-      wheel_speeds = self.avante_last_wheel_speeds
-    else:
-      wheel_speeds = (0., 0., 0., 0.)
-
-    self.parse_wheel_speeds(ret, *wheel_speeds)
-    ret.standstill = ret.vEgoRaw < 0.1
-
-    ret.vEgoCluster = cp.vl["CLU1"]["CF_Clu_Vanz"] * speed_conv
-
-    sas_valid = cp.vl["SAS1"]["SAS_Stat"] == AVANTE_VALID_SAS_STAT
-    if sas_valid:
-      self.avante_steering_angle_deg = cp.vl["SAS1"]["SAS_Angle"]
-      ret.steeringRateDeg = cp.vl["SAS1"]["SAS_Speed"]
-    else:
-      ret.steeringRateDeg = 0.
-    ret.steeringAngleDeg = self.avante_steering_angle_deg
-    vsm2_fault = cp.vl["VSM2"]["CF_Mdps_Def"] != 0 or cp.vl["VSM2"]["CF_Mdps_SErr"] != 0
-    steering_torque = cp.vl["VSM2"]["CR_Mdps_StrTq"]
-    steering_torque_eps = cp.vl["VSM2"]["CR_Mdps_OutTq"]
-    vsm2_torque_valid = abs(steering_torque) <= AVANTE_MAX_STEERING_TORQUE_NM and abs(steering_torque_eps) <= AVANTE_MAX_STEERING_EPS_TORQUE
-    ret.steeringTorque = 0. if vsm2_fault or not vsm2_torque_valid else steering_torque
-    ret.steeringTorqueEps = 0. if vsm2_fault or not vsm2_torque_valid else steering_torque_eps
-    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > AVANTE_STEERING_PRESSED_THRESHOLD_NM, 5)
-    ret.steerFaultTemporary = not sas_valid or vsm2_fault or not vsm2_torque_valid
-
-    ret.brake = 0
-    ret.brakePressed = cp.vl["TCU2"]["BRAKE_ACT_TCU"] != 0
-    ret.parkingBrake = cp.vl["CLU1"]["CF_Clu_ParkBrakeSw"] != 0
-    ret.espDisabled = cp.vl["TCS1"]["TCS_PAS"] == 1
-    ret.espActive = cp.vl["TCS1"]["ABS_ACT"] == 1
-    ret.gasPressed = bool(cp.vl["EMS6"]["CF_Ems_AclAct"])
-
-    ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(
-      120, cp.vl["CLU2"]["CF_Clu_TurnSigLh"], cp.vl["CLU2"]["CF_Clu_TurnSigRh"])
-    ret.doorOpen = any([
-      cp.vl["CLU2"]["CF_Clu_DrvDrSw"],
-      cp.vl["CLU2"]["CF_Clu_AstDrSw"],
-    ])
-    ret.seatbeltUnlatched = cp.vl["CLU2"]["CF_Clu_DrvSeatBeltSw"] == 0
-
-    gear = self.shifter_values.get(cp.vl["TCU4"]["CR_Tcu_GearSelDisp2"])
-    if gear is None:
-      gear = AVANTE_CUR_GR_VALUES.get(cp.vl["TCU2"]["CUR_GR"])
-    ret.gearShifter = self.parse_gear_shifter(gear)
-
-    ret.cruiseState.available = False
-    ret.cruiseState.enabled = False
-    ret.cruiseState.standstill = False
-    ret.cruiseState.nonAdaptive = False
-
-    return ret
-
   def update_canfd(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
@@ -411,23 +311,6 @@ class CarState(CarStateBase):
   def get_can_parsers(self, CP):
     if CP.flags & HyundaiFlags.CANFD:
       return self.get_can_parsers_canfd(CP)
-
-    if CP.carFingerprint == CAR.HYUNDAI_AVANTE_2012:
-      messages = [
-        ("TCS1", 100),
-        ("TCS5", 50),
-        ("SAS1", 100),
-        ("VSM2", 100),
-        ("EMS6", 100),
-        ("CLU1", 50),
-        ("CLU2", 10),
-        ("TCU2", 100),
-        ("TCU4", 10),
-      ]
-      return {
-        Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], messages, 0),
-        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
-      }
 
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 0),

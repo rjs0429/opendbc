@@ -264,6 +264,7 @@ class TestFwFingerprintTiming(unittest.TestCase):
   def test_fw_query_timing(self):
     total_ref_time = 7.6
     brand_ref_times = {
+      'avante_md': 0.3,
       'gm': 1.0,
       'body': 0.1,
       'chrysler': 0.3,

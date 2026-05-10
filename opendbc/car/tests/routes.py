@@ -1,5 +1,6 @@
 from typing import NamedTuple
 
+from opendbc.car.avante_md.values import CAR as AVANTE_MD
 from opendbc.car.chrysler.values import CAR as CHRYSLER
 from opendbc.car.gm.values import CAR as GM
 from opendbc.car.ford.values import CAR as FORD
@@ -19,6 +20,7 @@ from opendbc.car.psa.values import CAR as PSA
 
 # FIXME: add routes for these cars
 non_tested_cars = [
+  AVANTE_MD.AVANTE_MD_2012,  # custom VSM1 torque port, no comma route available
   MOCK.MOCK,
   GM.CADILLAC_ATS,
   GM.HOLDEN_ASTRA,
