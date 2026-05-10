@@ -763,29 +763,11 @@ FW_QUERY_CONFIG = FwQueryConfig(
       [HYUNDAI_AVANTE_ENGINE_VERSION_REQUEST],
       [HYUNDAI_AVANTE_ENGINE_VERSION_RESPONSE],
       whitelist_ecus=[Ecu.engine],
-      bus=0,
-    ),
-    Request(
-      [HYUNDAI_AVANTE_ENGINE_VERSION_REQUEST],
-      [HYUNDAI_AVANTE_ENGINE_VERSION_RESPONSE],
-      whitelist_ecus=[Ecu.engine],
     ),
     Request(
       [HYUNDAI_AVANTE_EPS_ID_REQUEST],
       [HYUNDAI_AVANTE_EPS_ID_RESPONSE],
       whitelist_ecus=[Ecu.eps],
-      bus=0,
-    ),
-    Request(
-      [HYUNDAI_AVANTE_EPS_ID_REQUEST],
-      [HYUNDAI_AVANTE_EPS_ID_RESPONSE],
-      whitelist_ecus=[Ecu.eps],
-    ),
-    Request(
-      [HYUNDAI_AVANTE_EPS_VERSION_REQUEST],
-      [HYUNDAI_AVANTE_EPS_VERSION_RESPONSE],
-      whitelist_ecus=[Ecu.eps],
-      bus=0,
     ),
     Request(
       [HYUNDAI_AVANTE_EPS_VERSION_REQUEST],
