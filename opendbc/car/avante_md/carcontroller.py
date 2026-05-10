@@ -16,14 +16,16 @@ class CarController(CarControllerBase):
 
     raw_vsm1_fresh = CS.vsm1_rx_raw is not None and (now_nanos - CS.vsm1_rx_nanos) <= VSM1_STALE_NANOS
     vsm1_normal = raw_vsm1_fresh and vsm1_is_normal_state(CS.vsm1_rx_raw)
+    control_ready = vsm1_normal and not CS.out.steerFaultTemporary
 
     apply_torque = 0
-    if vsm1_normal:
-      if CC.latActive:
+    if control_ready:
+      lat_active = CC.latActive
+      if lat_active:
         new_torque = int(round(CC.actuators.torque * self.params.STEER_MAX))
         apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                         CS.out.steeringTorque, self.params)
-      can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, CC.latActive))
+      can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, lat_active))
 
     self.apply_torque_last = apply_torque
 

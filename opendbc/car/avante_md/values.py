@@ -13,6 +13,9 @@ class CanBus:
   EPS = 2
 
 
+AVANTE_MD_DBC = "hyundai_avante_2012"
+
+
 class CarControllerParams:
   # VSM1 torque is encoded in 0.01 Nm units. The EPS-side API limit is 8.0 Nm.
   STEER_MAX = 800
@@ -37,7 +40,10 @@ class AvanteMdCarDocs(CarDocs):
 
 @dataclass
 class AvanteMdPlatformConfig(PlatformConfig):
-  dbc_dict: DbcDict = field(default_factory=lambda: {Bus.pt: "hyundai_avante_2012"})
+  dbc_dict: DbcDict = field(default_factory=lambda: {
+    Bus.pt: AVANTE_MD_DBC,
+    Bus.adas: AVANTE_MD_DBC,
+  })
 
 
 class CAR(Platforms):
