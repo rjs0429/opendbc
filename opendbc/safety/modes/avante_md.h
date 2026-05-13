@@ -2,8 +2,6 @@
 
 #include "opendbc/safety/declarations.h"
 
-extern safety_config current_safety_config;
-
 // ── Message IDs ──────────────────────────────────────────────────────────────
 #define AVANTE_MD_TCS1    0x153U
 #define AVANTE_MD_VSM1    0x164U
@@ -173,14 +171,15 @@ static uint32_t avante_md_compute_checksum(const CANPacket_t *msg) {
       cs ^= (msg->data[i] >> 4U) ^ (msg->data[i] & 0xFU);
     }
     cs ^= (msg->data[4] & 0xFU);
-    checksum = (uint32_t)(cs & 0xFU);
+    checksum = ((uint32_t)cs) & 0xFU;
 
   } else if (msg->addr == AVANTE_MD_TCU2) {
     // 2-bit checksum: (alive + gear_offset) & 0x3
     // Valid gears: 0, 1-6, 14 (R).  Non-valid gears return sentinel that never matches.
     uint8_t gear  = msg->data[1] & 0xFU;
     uint8_t alive = (msg->data[1] >> 4U) & 0x3U;
-    uint8_t gear_offset;
+    uint8_t gear_offset = 0U;
+    bool valid_gear = true;
 
     if (gear == 0U) {
       gear_offset = 0U;
@@ -190,10 +189,14 @@ static uint32_t avante_md_compute_checksum(const CANPacket_t *msg) {
       gear_offset = 1U;
     } else {
       // Non-normal gear value: fail checksum to trigger safety block
-      checksum = 0xFFU;
-      return checksum;
+      valid_gear = false;
     }
-    checksum = (uint32_t)((alive + gear_offset) & 0x3U);
+
+    if (valid_gear) {
+      checksum = (((uint32_t)alive) + ((uint32_t)gear_offset)) & 0x3U;
+    } else {
+      checksum = 0xFFU;
+    }
 
   } else {
     // No checksum defined for this message
@@ -415,7 +418,8 @@ static void avante_md_update_speed_from_tcs5(const CANPacket_t *msg) {
   uint16_t wheel_rr  = ((uint16_t)msg->data[6] >> 4U) | ((uint16_t)msg->data[7] << 4U);
   uint32_t wheel_sum = (uint32_t)wheel_fl + (uint32_t)wheel_fr +
                        (uint32_t)wheel_rl + (uint32_t)wheel_rr;
-  float speed_ms = (float)(wheel_sum / 4U) * 0.125F / 3.6F;
+  float wheel_avg = (float)wheel_sum / 4.0F;
+  float speed_ms = wheel_avg * 0.125F / 3.6F;
   UPDATE_VEHICLE_SPEED(speed_ms);
   vehicle_moving = speed_ms > 0.1F;
 }
