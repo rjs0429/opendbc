@@ -1,6 +1,7 @@
 from opendbc.car.avante_md import avantecan
-from opendbc.car.avante_md.avantecan import VSM1_STALE_NANOS, vsm1_is_normal_state
-from opendbc.car.avante_md.values import CarControllerParams
+from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS
+from opendbc.car.avante_md.values import CanBus, CarControllerParams
+from opendbc.car.can_definitions import CanData
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 
@@ -14,24 +15,31 @@ class CarController(CarControllerBase):
   def update(self, CC, CS, now_nanos):
     can_sends = []
 
-    raw_vsm1_fresh = CS.vsm1_rx_raw is not None and (now_nanos - CS.vsm1_rx_nanos) <= VSM1_STALE_NANOS
-    vsm1_normal = raw_vsm1_fresh and vsm1_is_normal_state(CS.vsm1_rx_raw)
-    control_ready = vsm1_normal and not CS.out.steerFaultTemporary
+    vsm1_fresh = CS.vsm1_rx_raw is not None and (now_nanos - CS.vsm1_rx_nanos) <= VSM1_STALE_NANOS
+    control_ready = (CC.latActive and
+                     CS.vsm1_normal and
+                     vsm1_fresh and
+                     not CS.out.steerFaultTemporary and
+                     not CS.out.steerFaultPermanent)
 
     apply_torque = 0
     if control_ready:
-      lat_active = CC.latActive
-      if lat_active:
-        new_torque = int(round(CC.actuators.torque * self.params.STEER_MAX))
-        apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
-                                                        CS.out.steeringTorque, self.params)
-      can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, lat_active))
+      new_torque = round(CC.actuators.torque * self.params.STEER_MAX)
+      apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
+                                                      CS.out.steeringTorque, self.params)
+      can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, True))
+    elif CS.vsm1_rx_raw is not None:
+      can_sends.append(CanData(VSM1, CS.vsm1_rx_raw, CanBus.EPS))
 
-    self.apply_torque_last = apply_torque
+    self.apply_torque_last = apply_torque if control_ready else 0
 
     new_actuators = CC.actuators.as_builder()
-    new_actuators.torque = apply_torque / self.params.STEER_MAX
-    new_actuators.torqueOutputCan = apply_torque
+    if control_ready:
+      new_actuators.torque = apply_torque / self.params.STEER_MAX
+      new_actuators.torqueOutputCan = apply_torque
+    else:
+      new_actuators.torque = 0.
+      new_actuators.torqueOutputCan = 0
 
     self.frame += 1
     return new_actuators, can_sends

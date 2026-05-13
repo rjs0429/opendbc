@@ -1,56 +1,40 @@
-import time
-
-from opendbc.can import CANDefine, CANParser
+from opendbc.can import CANParser
 from opendbc.car import Bus, structs
-from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_is_normal_state
+from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
 from opendbc.car.avante_md.values import CanBus, DBC
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
-AVANTE_GEAR_SHIFTER_VALUES = {
-  0: "P",
-  5: "D",
-  6: "N",
-  7: "R",
-  8: "S",
-  12: "T",
-}
-
-AVANTE_CUR_GR_VALUES = {
-  0: "P",
-  1: "D", 2: "D", 3: "D", 4: "D",
-  5: "D", 6: "D", 7: "D", 8: "D",
-  14: "R",
-}
-
 AVANTE_VALID_SAS_STAT = 7
 AVANTE_MAX_WHEEL_SPEED_KPH = 220.
 AVANTE_MAX_WHEEL_SPEED_SPREAD_KPH = 20.
 AVANTE_MAX_STEERING_TORQUE_NM = 10.
 AVANTE_MAX_STEERING_EPS_TORQUE_NM = 100.
-AVANTE_STEERING_PRESSED_THRESHOLD = 150  # 1.5 Nm in VSM1 torque units
+AVANTE_STEERING_PRESSED_THRESHOLD = 150  # 1.5 Nm in 0.01 Nm units, matches safety driver_allowance
+AVANTE_FAULT_PERMANENT_FRAMES = 10
 
 
 class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
 
-    can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
-    self.shifter_values = can_define.dv.get("TCU4", {}).get("CR_Tcu_GearSelDisp2", AVANTE_GEAR_SHIFTER_VALUES)
-
     self.last_wheel_speeds = None
     self.steering_angle_deg = 0.
+
     self.vsm1_rx_raw: bytes | None = None
     self.vsm1_rx_nanos = 0
-    self.vsm1_rx_wall_nanos = 0
+    self.vsm1_normal = False
     self.can_update_nanos = 0
 
-    self.eco_button_prev = False
-    self.eco_press_count = 0
-    self.eco_first_press_time = 0.0
-    self.eco_active = False
+    self.vsm2_fault_count = 0
+    self.vsm1_checksum_invalid_count = 0
+    self.can_invalid_count = 0
+    self.can_valid_seen_once = False
+    self.steer_fault_permanent = False
+
+    self.lat_active = False
 
   def update_vsm1_raw(self, can_packets):
     for t, frames in can_packets:
@@ -59,7 +43,7 @@ class CarState(CarStateBase):
         if src == CanBus.VEHICLE and addr == VSM1 and len(dat) == 8:
           self.vsm1_rx_raw = bytes(dat)
           self.vsm1_rx_nanos = t
-          self.vsm1_rx_wall_nanos = time.monotonic_ns()
+          self.vsm1_normal = vsm1_is_normal_state(self.vsm1_rx_raw)
 
   def update(self, can_parsers) -> structs.CarState:
     cp_vehicle = can_parsers[Bus.pt]
@@ -99,67 +83,78 @@ class CarState(CarStateBase):
     vsm2_fault = cp_eps.vl["VSM2"]["CF_Mdps_Def"] != 0 or cp_eps.vl["VSM2"]["CF_Mdps_SErr"] != 0
     steering_torque_nm = cp_eps.vl["VSM2"]["CR_Mdps_StrTq"]
     steering_torque_eps_nm = cp_eps.vl["VSM2"]["CR_Mdps_OutTq"]
-    vsm2_torque_valid = abs(steering_torque_nm) <= AVANTE_MAX_STEERING_TORQUE_NM and \
-                        abs(steering_torque_eps_nm) <= AVANTE_MAX_STEERING_EPS_TORQUE_NM
+    vsm2_torque_valid = (abs(steering_torque_nm) <= AVANTE_MAX_STEERING_TORQUE_NM and
+                         abs(steering_torque_eps_nm) <= AVANTE_MAX_STEERING_EPS_TORQUE_NM)
     ret.steeringTorque = 0 if vsm2_fault or not vsm2_torque_valid else round(steering_torque_nm * 100)
     ret.steeringTorqueEps = 0 if vsm2_fault or not vsm2_torque_valid else round(steering_torque_eps_nm * 100)
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > AVANTE_STEERING_PRESSED_THRESHOLD, 5)
 
-    vsm1_fresh = self.vsm1_rx_raw is not None and \
-                 (self.can_update_nanos - self.vsm1_rx_nanos) <= VSM1_STALE_NANOS and \
-                 (time.monotonic_ns() - self.vsm1_rx_wall_nanos) <= VSM1_STALE_NANOS
-    vsm1_normal = vsm1_fresh and vsm1_is_normal_state(self.vsm1_rx_raw)
-    ret.steerFaultTemporary = not sas_valid or vsm2_fault or not vsm2_torque_valid or not vsm1_normal
+    vsm1_stale = self.vsm1_rx_raw is None or (self.can_update_nanos - self.vsm1_rx_nanos) > VSM1_STALE_NANOS
+    vsm1_checksum_invalid = not vsm1_stale and not vsm1_checksum_valid(self.vsm1_rx_raw)
+
+    can_valid = cp_vehicle.can_valid and cp_eps.can_valid
+    ret.steerFaultTemporary = (not sas_valid or
+                                vsm2_fault or
+                                not vsm2_torque_valid or
+                                vsm1_stale or
+                                not self.vsm1_normal or
+                                not can_valid)
+
+    self.vsm2_fault_count = self.vsm2_fault_count + 1 if vsm2_fault else 0
+    self.vsm1_checksum_invalid_count = self.vsm1_checksum_invalid_count + 1 if vsm1_checksum_invalid else 0
+    if can_valid:
+      self.can_valid_seen_once = True
+      self.can_invalid_count = 0
+    elif self.can_valid_seen_once:
+      self.can_invalid_count += 1
+    else:
+      self.can_invalid_count = 0
+    if (self.vsm2_fault_count >= AVANTE_FAULT_PERMANENT_FRAMES or
+        self.vsm1_checksum_invalid_count >= AVANTE_FAULT_PERMANENT_FRAMES or
+        self.can_invalid_count >= AVANTE_FAULT_PERMANENT_FRAMES):
+      self.steer_fault_permanent = True
+    ret.steerFaultPermanent = self.steer_fault_permanent
 
     ret.brake = 0
-    ret.brakePressed = cp_vehicle.vl["TCU2"]["BRAKE_ACT_TCU"] != 0
+    ret.brakePressed = False
+    ret.gasPressed = False
     ret.parkingBrake = cp_vehicle.vl["CLU1"]["CF_Clu_ParkBrakeSw"] != 0
-    ret.espDisabled = cp_vehicle.vl["TCS1"]["TCS_PAS"] == 1
-    ret.espActive = cp_vehicle.vl["TCS1"]["ABS_ACT"] == 1
-    ret.gasPressed = bool(cp_vehicle.vl["EMS6"]["CF_Ems_AclAct"])
 
     ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(
       120, cp_vehicle.vl["CLU2"]["CF_Clu_TurnSigLh"], cp_vehicle.vl["CLU2"]["CF_Clu_TurnSigRh"])
-    ret.doorOpen = any([
-      cp_vehicle.vl["CLU2"]["CF_Clu_DrvDrSw"],
-      cp_vehicle.vl["CLU2"]["CF_Clu_AstDrSw"],
-    ])
-    ret.seatbeltUnlatched = cp_vehicle.vl["CLU2"]["CF_Clu_DrvSeatBeltSw"] == 0
+    ret.doorOpen = bool(cp_vehicle.vl["CLU2"]["CF_Clu_DrvDrSw"] or
+                        cp_vehicle.vl["CLU2"]["CF_Clu_AstDrSw"])
+    ret.seatbeltUnlatched = cp_vehicle.vl["CLU2"]["CF_Clu_DrvSeatBeltSw"] != 0
 
-    gear = self.shifter_values.get(cp_vehicle.vl["TCU4"]["CR_Tcu_GearSelDisp2"])
-    if gear is None:
-      gear = AVANTE_CUR_GR_VALUES.get(cp_vehicle.vl["TCU2"]["CUR_GR"])
-    ret.gearShifter = self.parse_gear_shifter(gear)
+    tcu1_drive = cp_vehicle.vl["TCU1"]["CUR_GR"] == 5
+    tcu2_cur_gr = int(cp_vehicle.vl["TCU2"]["CUR_GR"])
+    tcu2_drive = 1 <= tcu2_cur_gr <= 6
+    if tcu1_drive and tcu2_drive:
+      gear_str = "D"
+    elif tcu2_cur_gr == 14:
+      gear_str = "R"
+    else:
+      gear_str = None
+    ret.gearShifter = self.parse_gear_shifter(gear_str)
+
+    unsafe_vehicle_state = (not (tcu1_drive and tcu2_drive) or
+                             ret.doorOpen or
+                             ret.seatbeltUnlatched or
+                             ret.parkingBrake)
 
     ret.cruiseState.available = True
     ret.cruiseState.enabled = False
     ret.cruiseState.standstill = False
     ret.cruiseState.nonAdaptive = False
 
-    eco_pressed = cp_vehicle.vl["CLU2"]["CF_Clu_ActiveEcoSW"] != 0
+    should_be_active = not unsafe_vehicle_state and not ret.steerFaultTemporary and not ret.steerFaultPermanent
     button_events = []
-    if eco_pressed and not self.eco_button_prev:
-      now = time.monotonic()
-      if self.eco_press_count == 0 or (now - self.eco_first_press_time) > 1.0:
-        if not ret.steerFaultTemporary:
-          self.eco_press_count = 1
-          self.eco_first_press_time = now
-      else:
-        if not ret.steerFaultTemporary:
-          self.eco_active = not self.eco_active
-          if self.eco_active:
-            button_events.append(structs.CarState.ButtonEvent(type=ButtonType.accelCruise, pressed=False))
-          else:
-            button_events.append(structs.CarState.ButtonEvent(type=ButtonType.cancel, pressed=False))
-        self.eco_press_count = 0
-    self.eco_button_prev = eco_pressed
-
-    if ret.steerFaultTemporary:
-      if self.eco_active:
-        button_events.append(structs.CarState.ButtonEvent(type=ButtonType.cancel, pressed=False))
-      self.eco_active = False
-      self.eco_press_count = 0
-
+    if should_be_active and not self.lat_active:
+      button_events.append(structs.CarState.ButtonEvent(type=ButtonType.accelCruise, pressed=False))
+      self.lat_active = True
+    elif not should_be_active and self.lat_active:
+      button_events.append(structs.CarState.ButtonEvent(type=ButtonType.cancel, pressed=False))
+      self.lat_active = False
     ret.buttonEvents = button_events
 
     return ret
@@ -167,13 +162,12 @@ class CarState(CarStateBase):
   @staticmethod
   def get_can_parsers(CP):
     vehicle_bus_messages = [
-      ("TCS1", 100),
+      ("VSM1", 100),
       ("TCS5", 50),
-      ("EMS6", 100),
       ("CLU1", 50),
       ("CLU2", 10),
+      ("TCU1", 100),
       ("TCU2", 100),
-      ("TCU4", 10),
     ]
 
     eps_bus_messages = [

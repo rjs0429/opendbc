@@ -3,7 +3,7 @@ from opendbc.car.avante_md.values import CanBus
 
 VSM1 = 0x164
 VSM1_ACTIVE_CTR_MODE = 2
-VSM1_STALE_NANOS = 200_000_000
+VSM1_STALE_NANOS = 50_000_000
 
 
 def vsm1_checksum(dat: bytes | bytearray) -> int:
@@ -13,8 +13,12 @@ def vsm1_checksum(dat: bytes | bytearray) -> int:
   return checksum
 
 
+def vsm1_checksum_valid(raw: bytes) -> bool:
+  return len(raw) == 8 and vsm1_checksum(raw) == raw[7]
+
+
 def vsm1_is_normal_state(raw: bytes) -> bool:
-  return (vsm1_checksum(raw) == raw[7] and
+  return (vsm1_checksum_valid(raw) and
           raw[0] == 0x00 and
           raw[1] == 0x08 and
           raw[2] == 0x00 and
