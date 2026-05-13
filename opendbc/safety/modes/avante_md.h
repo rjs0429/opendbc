@@ -26,6 +26,7 @@ extern safety_config current_safety_config;
 #define AVANTE_MD_STALE_US          100000U
 #define AVANTE_MD_VSM1_TX_MIN_US    7000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
+#define AVANTE_MD_STABILIZE_US      100000U
 
 // ── Signal value constants ────────────────────────────────────────────────────
 #define AVANTE_MD_VALID_SAS_STAT 7U
@@ -74,6 +75,10 @@ static bool avante_md_parking_brake_off    = false;
 // ── Openpilot VSM1 TX tracking ────────────────────────────────────────────────
 static bool     avante_md_vsm1_tx_seen      = false;
 static uint32_t avante_md_vsm1_tx_last_time = 0U;
+
+// ── TX-block stabilization tracking ──────────────────────────────────────────
+static bool     avante_md_block_seen      = false;
+static uint32_t avante_md_block_last_time = 0U;
 
 // ── RX state helpers ──────────────────────────────────────────────────────────
 
@@ -314,24 +319,6 @@ static bool avante_md_eps_state_normal(void) {
 
 // ── Controls-allowed auto-management ─────────────────────────────────────────
 
-// Returns true once every required message has been received at least once.
-// Until this point the rx-hook must not trigger disengage so that initial
-// frame setup in tests (and at boot) does not produce false cancels.
-static bool avante_md_all_prereq_messages_seen(void) {
-  return avante_md_tcs1_state.seen    &&
-         avante_md_vsm1_state.seen    &&
-         avante_md_tcs5_state.seen    &&
-         avante_md_esp2_state.seen    &&
-         avante_md_whl_pul_state.seen &&
-         avante_md_clu1_state.seen    &&
-         avante_md_clu2_state.seen    &&
-         avante_md_tcu1_state.seen    &&
-         avante_md_tcu2_state.seen    &&
-         avante_md_vsm2_state.seen    &&
-         avante_md_sas1_state.seen    &&
-         avante_md_mdps1_state.seen;
-}
-
 static void avante_md_disengage_controls(void) {
   controls_allowed   = false;
   desired_torque_last = 0;
@@ -339,20 +326,33 @@ static void avante_md_disengage_controls(void) {
 }
 
 // Evaluates all TX-unblock prerequisites (condition 1: vehicle/EPS state).
-// Automatically sets controls_allowed when ready; disengages when not.
-// Returns the readiness result so callers can make TX/fwd decisions.
+// Automatically sets controls_allowed when ready AND 100ms have elapsed since
+// the last TX-blocking condition was observed; disengages when not ready.
+// Returns true only when both ready and stabilized.
 static bool avante_md_control_prereqs_normal(void) {
   uint32_t now   = microsecond_timer_get();
   bool     ready = avante_md_vehicle_bus_ready(now)  &&
                    avante_md_eps_bus_ready(now)       &&
                    avante_md_vehicle_state_normal()   &&
                    avante_md_eps_state_normal();
-  if (ready) {
-    controls_allowed = true;
-  } else {
+
+  if (!ready) {
+    avante_md_block_last_time = now;
+    avante_md_block_seen      = true;
     avante_md_disengage_controls();
+  } else {
+    bool stabilized = !avante_md_block_seen ||
+                      (safety_get_ts_elapsed(now, avante_md_block_last_time) >=
+                       AVANTE_MD_STABILIZE_US);
+    if (stabilized) {
+      controls_allowed = true;
+    }
   }
-  return ready;
+
+  bool stabilized_now = !avante_md_block_seen ||
+                        (safety_get_ts_elapsed(now, avante_md_block_last_time) >=
+                         AVANTE_MD_STABILIZE_US);
+  return ready && stabilized_now;
 }
 
 // ── TX VSM1 message validity checks (condition 2) ────────────────────────────
@@ -487,12 +487,11 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // Auto-manage controls_allowed once every required message has been seen.
-  // Guard prevents false disengages while the initial set of frames is still
-  // being received at boot or in test setup.
-  if (avante_md_all_prereq_messages_seen()) {
-    (void)avante_md_control_prereqs_normal();
-  }
+  // Auto-manage controls_allowed on every accepted prerequisite RX. This treats
+  // the initial unseen/stale prerequisite state as a real blocking condition, so
+  // the first full normal prerequisite set still needs the 100 ms stabilization
+  // window before controls are allowed.
+  (void)avante_md_control_prereqs_normal();
 }
 
 static bool avante_md_tx_hook(const CANPacket_t *msg) {
@@ -571,6 +570,9 @@ static void avante_md_reset_state(void) {
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
+
+  avante_md_block_seen      = false;
+  avante_md_block_last_time = 0U;
 }
 
 static safety_config avante_md_init(uint16_t param) {

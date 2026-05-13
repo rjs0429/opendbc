@@ -37,15 +37,25 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self._refresh_prereqs_on_tx = True
     self._auto_tx_time_us = 0
     self._last_driver_torque = 0
+    self._prereqs_stabilized = False
+    self._prev_torque = 0
 
   # ── TX wrapper ────────────────────────────────────────────────────────────
 
   def _tx(self, msg):
     if self._refresh_prereqs_on_tx:
+      if not self._prereqs_stabilized:
+        prev_torque = self._prev_torque
+        self._set_prereqs_normal_and_stabilized(self._auto_tx_time_us)
+        super()._set_prev_torque(prev_torque)
       self._auto_tx_time_us += 8_000
       self.safety.set_timer(self._auto_tx_time_us)
       self._set_prereqs_normal()
     return super()._tx(msg)
+
+  def _set_prev_torque(self, t):
+    self._prev_torque = t
+    super()._set_prev_torque(t)
 
   # ── Checksum helpers ──────────────────────────────────────────────────────
 
@@ -294,10 +304,22 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.safety.set_timer(t)
     self._set_prereqs_normal()
 
+  def _set_prereqs_normal_and_stabilized(self, t=0):
+    """Send normal prereqs, then reevaluate after the 100ms stabilization window."""
+    self.safety.set_timer(t)
+    self._set_prereqs_normal()
+    self.safety.set_timer(t + 100_000)
+    self._set_prereqs_normal()
+    self._auto_tx_time_us = max(self._auto_tx_time_us, t + 100_000)
+    self._prereqs_stabilized = True
+
   # ── Controls-allowed auto-management ─────────────────────────────────────
 
   def test_controls_allowed_enabled_when_all_prereqs_normal(self):
     self.assertFalse(self.safety.get_controls_allowed())
+    self._set_prereqs_normal()
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.safety.set_timer(100_000)
     self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
@@ -305,14 +327,48 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(self.safety.get_controls_allowed())
 
   def test_controls_not_reenabled_after_blocking_condition_clears(self):
-    """Once disengaged, returning to normal state does NOT re-enable by itself;
-    it re-enables on the next valid prereq pass (auto-management)."""
-    self._set_prereqs_normal()
+    """Controls must not re-enable until 100ms after last blocking condition clears.
+
+    _set_prereqs_normal() refreshes messages in order; until CLU2 is refreshed
+    (7th msg), door_open is still observed each rx_hook, bumping block_last_time
+    to T_clear.  Re-enable requires a second call at T_clear + 100_000.
+    """
+    self.safety.set_timer(0)
+    self._set_prereqs_normal_and_stabilized(0)
     self.assertTrue(self.safety.get_controls_allowed())
-    # Introduce a blocking condition
     self.safety.safety_rx_hook(self._clu2_msg(door_open=True))
     self.assertFalse(self.safety.get_controls_allowed())
-    # Restore normal — auto-management re-enables
+    # T_clear=100_000: clear door_open; block_last_time→100_000
+    self.safety.set_timer(100_000)
+    self._set_prereqs_normal()
+    self.assertFalse(self.safety.get_controls_allowed())
+    # T_clear + 100_000 = 200_000: 100ms elapsed since last block obs → re-enable
+    self.safety.set_timer(200_000)
+    self._set_prereqs_normal()
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_stabilization_100ms_required_after_block(self):
+    """Controls must not re-enable until 100ms after last blocking condition.
+
+    Calling _set_prereqs_normal() at T_clear bumps block_last_time to T_clear
+    (msgs 1-6 still see door_open before CLU2 is refreshed).  A second call at
+    T_clear + 100_000 finds all msgs fresh and stabilized → re-enables.
+    """
+    self.safety.set_timer(0)
+    self._set_prereqs_normal_and_stabilized(0)
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.safety_rx_hook(self._clu2_msg(door_open=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    # T_clear=100_000: clear door_open; block_last_time→100_000
+    self.safety.set_timer(100_000)
+    self._set_prereqs_normal()
+    self.assertFalse(self.safety.get_controls_allowed())
+    # 99_999 µs after T_clear — still blocked
+    self.safety.set_timer(199_999)
+    self._set_prereqs_normal()
+    self.assertFalse(self.safety.get_controls_allowed())
+    # 100_000 µs after T_clear — now enabled
+    self.safety.set_timer(200_000)
     self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
@@ -353,23 +409,21 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     """TX must be blocked if less than 7 ms has elapsed since last TX."""
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
-    self.safety.set_timer(0)
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized(0)
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
     # 6 999 µs — still too soon
-    self.safety.set_timer(6_999)
+    self.safety.set_timer(106_999)
     self._set_prereqs_normal()
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
     # 7 000 µs — exactly at boundary
-    self.safety.set_timer(7_000)
+    self.safety.set_timer(107_000)
     self._set_prereqs_normal()
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
 
   def test_vsm1_duplicate_tx_same_timestamp_blocked(self):
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
-    self.safety.set_timer(100_000)
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized(0)
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
     self._set_prereqs_normal()
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
@@ -377,7 +431,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
   # ── Blocking conditions — vehicle state ──────────────────────────────────
 
   def test_door_open_blocks_tx_and_disengages(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._clu2_msg(door_open=True))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -385,7 +439,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
 
   def test_seatbelt_unlatched_blocks_tx_and_disengages(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._clu2_msg(seatbelt_unlatched=True))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -393,7 +447,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
 
   def test_parking_brake_on_blocks_tx_and_disengages(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._clu1_msg(parking_brake=True))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -402,7 +456,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def test_gear_not_d_tcu2_blocks_tx_and_disengages(self):
     """TCU2.CUR_GR outside 1-6 must disengage."""
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._tcu2_msg(gear=0))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -411,7 +465,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def test_gear_not_d_tcu1_blocks_tx_and_disengages(self):
     """TCU1.CUR_GR != 5 must disengage."""
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=7))  # R
     self.assertFalse(self.safety.get_controls_allowed())
@@ -420,7 +474,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def test_vsm1_non_normal_state_blocks_tx_and_disengages(self):
     """Vehicle VSM1 in non-idle state must disengage."""
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(
       self._vsm1_vehicle_msg(torque=100, steer_req=1, ctr_mode=2))
@@ -438,24 +492,32 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(super()._tx(self._vsm1_msg(100, steer_req=1, ctr_mode=2)))
 
   def test_vsm1_normal_state_does_not_disengage(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._vsm1_vehicle_msg())
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_non_normal_to_normal_reenables_controls(self):
-    """With auto-management, restoring all prereqs re-enables controls_allowed."""
-    self._set_prereqs_normal()
+    """With auto-management, restoring all prereqs re-enables after 100ms stabilization.
+
+    VSM1 is the first message refreshed in _set_prereqs_normal(), so vsm1_normal
+    is corrected before any other message is processed.  A single call at
+    t=100_000 suffices: msgs from t=0 are not yet stale (100_000 not > 100_000)
+    and stabilized = (100_000 - 0) >= 100_000.
+    """
+    self.safety.set_timer(0)
+    self._set_prereqs_normal_and_stabilized(0)
     self.safety.safety_rx_hook(
       self._vsm1_vehicle_msg(torque=100, steer_req=1, ctr_mode=2))
     self.assertFalse(self.safety.get_controls_allowed())
+    self.safety.set_timer(200_000)
     self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
   # ── Blocking conditions — EPS state ──────────────────────────────────────
 
   def test_vsm2_def_flag_disengages_blocks_tx_allows_fwd(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._vsm2_msg(def_flag=1))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -464,7 +526,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x164))
 
   def test_vsm2_serr_flag_disengages_blocks_tx_allows_fwd(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._vsm2_msg(serr_flag=1))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -473,14 +535,20 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x164))
 
   def test_vsm2_fault_clear_reenables_controls(self):
-    self._set_prereqs_normal()
+    self.safety.set_timer(0)
+    self._set_prereqs_normal_and_stabilized(0)
     self.safety.safety_rx_hook(self._vsm2_msg(def_flag=1))
     self.assertFalse(self.safety.get_controls_allowed())
+    # T_clear=100_000: msgs 1-9 still see vsm2_normal=False → block_last_time→100_000
+    self.safety.set_timer(100_000)
+    self._set_prereqs_normal()
+    # T_clear + 100_000 = 200_000: stabilized → re-enable
+    self.safety.set_timer(200_000)
     self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_sas1_invalid_disengages_blocks_tx_allows_fwd(self):
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._sas1_msg(stat=0))
     self.assertFalse(self.safety.get_controls_allowed())
@@ -489,9 +557,15 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x164))
 
   def test_sas1_valid_reenables_controls(self):
-    self._set_prereqs_normal()
+    self.safety.set_timer(0)
+    self._set_prereqs_normal_and_stabilized(0)
     self.safety.safety_rx_hook(self._sas1_msg(stat=0))
     self.assertFalse(self.safety.get_controls_allowed())
+    # T_clear=100_000: msgs 1-10 still see sas1_valid=False → block_last_time→100_000
+    self.safety.set_timer(100_000)
+    self._set_prereqs_normal()
+    # T_clear + 100_000 = 200_000: stabilized → re-enable
+    self.safety.set_timer(200_000)
     self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
@@ -499,7 +573,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def test_tcu2_bad_checksum_blocks_tx(self):
     """Bad TCU2 checksum must eventually block TX (rx_check invalid)."""
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     # Repeatedly send TCU2 with bad checksum until wrong_counters saturates
     for _ in range(6):
@@ -519,8 +593,9 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
       self._vsm2_cnt = 0
       self._sas1_cnt = 0
       self._auto_tx_time_us = 0
+      self._prereqs_stabilized = False
       self._set_prev_torque(0)
-      self._set_prereqs_normal()
+      self._set_prereqs_normal_and_stabilized()
       self.assertTrue(self.safety.get_controls_allowed(),
                       f"controls_allowed should be True for gear={gear}")
 
@@ -599,9 +674,14 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.safety.set_controls_allowed(True)
     self.safety.set_timer(0)
     self._set_prereqs_normal()
+    # Let all messages go stale; refresh at t=200_001 sets block_last_time=200_001
     self.safety.set_timer(200_001)
     self._set_prereqs_normal()
-    # Auto-management should have re-enabled after refresh
+    self.assertFalse(self.safety.get_controls_allowed())
+    # t=300_001 = 200_001 + 100_000: msgs from 200_001, elapsed=100_000 (not stale),
+    # stabilized=100_000 >= 100_000 → re-enable
+    self.safety.set_timer(300_001)
+    self._set_prereqs_normal()
     self.assertTrue(self.safety.get_controls_allowed())
 
   # ── Forwarding ────────────────────────────────────────────────────────────
@@ -615,8 +695,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     """After openpilot sends VSM1 within 30 ms, stock VSM1 must be blocked."""
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
-    self.safety.set_timer(10_000)
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized(10_000)
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
     self.assertEqual(-1, self.safety.safety_fwd_hook(0, 0x164))
 
@@ -624,10 +703,9 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     """After 30 ms without openpilot TX, stock VSM1 must be forwarded again."""
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
-    self.safety.set_timer(10_000)
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized(10_000)
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
-    self.safety.set_timer(40_001)
+    self.safety.set_timer(140_001)
     self._set_prereqs_normal()
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x164))
 
@@ -649,8 +727,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     """fwd_hook evaluates the state before rx_hook processes the new frame."""
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
-    self.safety.set_timer(10_000)
-    self._set_prereqs_normal()
+    self._set_prereqs_normal_and_stabilized(10_000)
     self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
     non_normal = self._vsm1_vehicle_msg(torque=100, steer_req=1, ctr_mode=2)
     fwd_before_rx = self.safety.safety_fwd_hook(0, 0x164)
@@ -715,8 +792,15 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
       for t in range(int(-max_torque * 1.5), int(max_torque * 1.5)):
         self._set_prev_torque(t)
         self.assertFalse(super()._tx(self._torque_cmd_msg(t)))
+      # Restore: two calls 100ms apart so stabilization window passes.
+      # First call clears door_open (block_last_time→T_clear); second enables.
       self._refresh_prereqs_on_tx = True
-      self._set_prereqs_normal()  # restore normal state for next iteration
+      t_clear = self._auto_tx_time_us + 100_000
+      self.safety.set_timer(t_clear)
+      self._set_prereqs_normal()
+      self.safety.set_timer(t_clear + 100_000)
+      self._set_prereqs_normal()
+      self._auto_tx_time_us = t_clear + 100_000
 
   # ── Realtime torque limits (override for timer management) ───────────────
 
@@ -731,15 +815,19 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
       self._vsm2_cnt = 0
       self._sas1_cnt = 0
       self._auto_tx_time_us = 0
+      self._prereqs_stabilized = False
       self._set_prev_torque(0)
       self._reset_torque_driver_measurement(0)
       self._refresh_prereqs_on_tx = False
-      tx_time = 0
-      for torque in range(0, self.MAX_RT_DELTA + 1, self.MAX_RATE_UP):
+      self._set_prereqs_normal_and_stabilized(300_000)
+      self.safety.set_timer(400_000)
+      self.assertTrue(super()._tx(self._torque_cmd_msg(0)))
+      tx_time = 407_000
+      for torque in range(self.MAX_RATE_UP, self.MAX_RT_DELTA + 1, self.MAX_RATE_UP):
         self.safety.set_timer(tx_time)
         self._set_prereqs_normal()
         self.assertTrue(super()._tx(self._torque_cmd_msg(torque * sign)))
-        tx_time += 8_000
+        tx_time += 7_000
       self.safety.set_timer(tx_time)
       self._set_prereqs_normal()
       self.assertFalse(
