@@ -655,18 +655,68 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(self.safety.get_controls_allowed())
     self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x164))
 
+  def test_10hz_prereqs_tolerate_110ms_jitter(self):
+    self._set_prereqs_normal_and_stabilized()
+    self.assertTrue(self.safety.get_controls_allowed())
+    # CLU2 and MDPS1 are 10 Hz messages in real logs and can arrive slightly
+    # over 100 ms apart, so refresh only the faster prereqs at +90 ms.
+    self.safety.set_timer(190_000)
+    self.safety.safety_rx_hook(self._vsm1_vehicle_msg())
+    self.safety.safety_rx_hook(self._tcs1_msg())
+    self.safety.safety_rx_hook(self._tcs5_msg())
+    self.safety.safety_rx_hook(self._esp2_msg())
+    self.safety.safety_rx_hook(self._whl_pul_msg())
+    self.safety.safety_rx_hook(self._clu1_msg())
+    self.safety.safety_rx_hook(self._tcu1_msg())
+    self.safety.safety_rx_hook(self._tcu2_msg())
+    self.safety.safety_rx_hook(self._vsm2_msg())
+    self.safety.safety_rx_hook(self._sas1_msg())
+    self.safety.set_timer(210_000)
+    self._refresh_prereqs_on_tx = False
+    self.assertTrue(super()._tx(self._vsm1_msg(0, steer_req=0)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def test_stale_mdps1_blocks_tx(self):
     self.safety.set_controls_allowed(True)
     self._set_prev_torque(0)
     self.safety.set_timer(0)
     self._set_prereqs_normal()
     # Refresh all except MDPS1
-    self.safety.set_timer(100_000)
+    self.safety.set_timer(250_000)
     self.safety.safety_rx_hook(self._vsm1_vehicle_msg())
     self.safety.safety_rx_hook(self._tcs1_msg())
+    self.safety.safety_rx_hook(self._tcs5_msg())
+    self.safety.safety_rx_hook(self._esp2_msg())
+    self.safety.safety_rx_hook(self._whl_pul_msg())
+    self.safety.safety_rx_hook(self._clu1_msg())
+    self.safety.safety_rx_hook(self._clu2_msg())
+    self.safety.safety_rx_hook(self._tcu1_msg())
+    self.safety.safety_rx_hook(self._tcu2_msg())
     self.safety.safety_rx_hook(self._vsm2_msg())
     self.safety.safety_rx_hook(self._sas1_msg())
-    self.safety.set_timer(200_001)
+    self.safety.set_timer(250_001)
+    self._refresh_prereqs_on_tx = False
+    self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=1, ctr_mode=2)))
+
+  def test_stale_clu2_blocks_tx(self):
+    self.safety.set_controls_allowed(True)
+    self._set_prev_torque(0)
+    self.safety.set_timer(0)
+    self._set_prereqs_normal()
+    # Refresh all except CLU2.
+    self.safety.set_timer(250_000)
+    self.safety.safety_rx_hook(self._vsm1_vehicle_msg())
+    self.safety.safety_rx_hook(self._tcs1_msg())
+    self.safety.safety_rx_hook(self._tcs5_msg())
+    self.safety.safety_rx_hook(self._esp2_msg())
+    self.safety.safety_rx_hook(self._whl_pul_msg())
+    self.safety.safety_rx_hook(self._clu1_msg())
+    self.safety.safety_rx_hook(self._tcu1_msg())
+    self.safety.safety_rx_hook(self._tcu2_msg())
+    self.safety.safety_rx_hook(self._vsm2_msg())
+    self.safety.safety_rx_hook(self._sas1_msg())
+    self.safety.safety_rx_hook(self._mdps1_msg())
+    self.safety.set_timer(250_001)
     self._refresh_prereqs_on_tx = False
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=1, ctr_mode=2)))
 

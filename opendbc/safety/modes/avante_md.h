@@ -21,7 +21,8 @@
 #define AVANTE_MD_EPS_BUS     2U
 
 // ── Timing thresholds (microseconds) ─────────────────────────────────────────
-#define AVANTE_MD_STALE_US          100000U
+#define AVANTE_MD_STALE_FAST_US     100000U
+#define AVANTE_MD_STALE_10HZ_US     250000U
 #define AVANTE_MD_VSM1_TX_MIN_US    7000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
 #define AVANTE_MD_STABILIZE_US      100000U
@@ -90,9 +91,9 @@ static void avante_md_update_rx_state(AvanteMdRxState *state, uint32_t now) {
   state->last_time = now;
 }
 
-static bool avante_md_rx_state_stale(const AvanteMdRxState *state, uint32_t now) {
+static bool avante_md_rx_state_stale(const AvanteMdRxState *state, uint32_t now, uint32_t stale_us) {
   return !state->seen ||
-         (safety_get_ts_elapsed(now, state->last_time) > AVANTE_MD_STALE_US);
+         (safety_get_ts_elapsed(now, state->last_time) > stale_us);
 }
 
 // Checks rx_msg_safety_check status for a given addr/bus pair.
@@ -271,15 +272,15 @@ static int avante_md_get_vsm_torque(const CANPacket_t *msg) {
 // VSM1/TCU2 (checksum+counter) and CLU1/CLU2 (counter).
 static bool avante_md_vehicle_bus_ready(uint32_t now) {
   bool messages_fresh =
-      !avante_md_rx_state_stale(&avante_md_tcs1_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_vsm1_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_tcs5_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_esp2_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_whl_pul_state, now) &&
-      !avante_md_rx_state_stale(&avante_md_clu1_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_clu2_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_tcu1_state,    now) &&
-      !avante_md_rx_state_stale(&avante_md_tcu2_state,    now);
+      !avante_md_rx_state_stale(&avante_md_tcs1_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_vsm1_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_tcs5_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_esp2_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_whl_pul_state, now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_clu1_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_clu2_state,    now, AVANTE_MD_STALE_10HZ_US) &&
+      !avante_md_rx_state_stale(&avante_md_tcu1_state,    now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_tcu2_state,    now, AVANTE_MD_STALE_FAST_US);
 
   bool safety_checks_pass =
       avante_md_rx_check_valid((int)AVANTE_MD_VSM1, AVANTE_MD_VEHICLE_BUS) &&
@@ -294,9 +295,9 @@ static bool avante_md_vehicle_bus_ready(uint32_t now) {
 // VSM2/SAS1 (checksum+counter).
 static bool avante_md_eps_bus_ready(uint32_t now) {
   bool messages_fresh =
-      !avante_md_rx_state_stale(&avante_md_vsm2_state,  now) &&
-      !avante_md_rx_state_stale(&avante_md_sas1_state,  now) &&
-      !avante_md_rx_state_stale(&avante_md_mdps1_state, now);
+      !avante_md_rx_state_stale(&avante_md_vsm2_state,  now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_sas1_state,  now, AVANTE_MD_STALE_FAST_US) &&
+      !avante_md_rx_state_stale(&avante_md_mdps1_state, now, AVANTE_MD_STALE_10HZ_US);
 
   bool safety_checks_pass =
       avante_md_rx_check_valid((int)AVANTE_MD_VSM2, AVANTE_MD_EPS_BUS) &&
