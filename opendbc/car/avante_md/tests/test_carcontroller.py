@@ -25,37 +25,48 @@ class FakeCarState:
     self.vsm1_rx_raw = normal_vsm1()
     self.vsm1_rx_nanos = 0
     self.vsm1_normal = True
+    self.openpilot_enabled = False
     self.out = structs.CarState()
 
 
 class TestAvanteMdCarController(unittest.TestCase):
-  def _update_with_torque(self, torque: float):
+  def _update_with_torque(self, torque: float, enabled: bool = False):
     CP = CarInterface.get_params(CAR.AVANTE_MD_2012, gen_empty_fingerprint(), [], False, False, False)
     CC = structs.CarControl.new_message()
+    CC.enabled = enabled
     CC.latActive = True
     CC.actuators.torque = torque
 
     controller = CarController({}, CP)
-    actuators, can_sends = controller.update(CC.as_reader(), FakeCarState(), 0)
+    CS = FakeCarState()
+    actuators, can_sends = controller.update(CC.as_reader(), CS, 0)
 
     self.assertEqual(1, len(can_sends))
     self.assertEqual(VSM1, can_sends[0].address)
     self.assertEqual(CanBus.EPS, can_sends[0].src)
-    return actuators, vsm1_torque(can_sends[0].dat)
+    return actuators, vsm1_torque(can_sends[0].dat), CS
 
   def test_positive_openpilot_torque_sends_negative_vsm1_torque(self):
-    actuators, torque = self._update_with_torque(0.5)
+    actuators, torque, _ = self._update_with_torque(0.5)
 
     self.assertLess(torque, 0)
     self.assertGreater(actuators.torque, 0.)
     self.assertEqual(torque, actuators.torqueOutputCan)
 
   def test_negative_openpilot_torque_sends_positive_vsm1_torque(self):
-    actuators, torque = self._update_with_torque(-0.5)
+    actuators, torque, _ = self._update_with_torque(-0.5)
 
     self.assertGreater(torque, 0)
     self.assertLess(actuators.torque, 0.)
     self.assertEqual(torque, actuators.torqueOutputCan)
+
+  def test_syncs_openpilot_enabled_to_carstate(self):
+    _, _, CS = self._update_with_torque(0., enabled=True)
+    self.assertTrue(CS.openpilot_enabled)
+
+  def test_syncs_openpilot_disabled_to_carstate(self):
+    _, _, CS = self._update_with_torque(0., enabled=False)
+    self.assertFalse(CS.openpilot_enabled)
 
 
 if __name__ == "__main__":

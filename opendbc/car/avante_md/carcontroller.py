@@ -14,6 +14,7 @@ class CarController(CarControllerBase):
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
+    CS.openpilot_enabled = CC.enabled
 
     vsm1_fresh = CS.vsm1_rx_raw is not None and (now_nanos - CS.vsm1_rx_nanos) <= VSM1_STALE_NANOS
     control_ready = (CC.latActive and
