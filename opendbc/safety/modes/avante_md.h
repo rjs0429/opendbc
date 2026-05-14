@@ -583,7 +583,7 @@ static void avante_md_reset_state(void) {
 static safety_config avante_md_init(uint16_t param) {
   static const CanMsg AVANTE_MD_TX_MSGS[] = {
     {AVANTE_MD_VSM1, AVANTE_MD_EPS_BUS, 8,
-     .check_relay = true, .disable_static_blocking = true},
+     .check_relay = false, .disable_static_blocking = true},
   };
 
   static RxCheck avante_md_rx_checks[] = {

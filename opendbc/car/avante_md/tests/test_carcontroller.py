@@ -3,7 +3,7 @@ import unittest
 
 from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.avante_md.avantecan import VSM1, vsm1_checksum
-from opendbc.car.avante_md.carcontroller import CarController
+from opendbc.car.avante_md.carcontroller import AVANTE_CONTROL_READY_STABILIZE_NANOS, CarController
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus
 
@@ -38,12 +38,18 @@ class TestAvanteMdCarController(unittest.TestCase):
     CS = FakeCarState()
     return controller, CC, CS
 
+  @staticmethod
+  def _update(controller, CC, CS, now_nanos):
+    CS.vsm1_rx_nanos = now_nanos
+    return controller.update(CC.as_reader(), CS, now_nanos)
+
   def _update_with_torque(self, torque: float, enabled: bool = False):
     controller, CC, CS = self._setup_controller()
     CC.enabled = enabled
     CC.actuators.torque = torque
 
-    actuators, can_sends = controller.update(CC.as_reader(), CS, 0)
+    self._update(controller, CC, CS, 0)
+    actuators, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
 
     self.assertEqual(1, len(can_sends))
     self.assertEqual(VSM1, can_sends[0].address)
@@ -76,10 +82,13 @@ class TestAvanteMdCarController(unittest.TestCase):
     controller, CC, CS = self._setup_controller()
     CC.actuators.torque = -1.
 
-    _, can_sends = controller.update(CC.as_reader(), CS, 0)
+    _, can_sends = self._update(controller, CC, CS, 0)
+    self.assertEqual(0, vsm1_torque(can_sends[0].dat))
+
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
     self.assertEqual(10, vsm1_torque(can_sends[0].dat))
 
-    _, can_sends = controller.update(CC.as_reader(), CS, 10_000_000)
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
     self.assertEqual(20, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_after_lat_inactive(self):
@@ -87,28 +96,35 @@ class TestAvanteMdCarController(unittest.TestCase):
     CC.actuators.torque = -1.
 
     for frame in range(3):
-      controller.update(CC.as_reader(), CS, frame * 10_000_000)
+      self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + frame * 10_000_000)
 
     CC.latActive = False
-    actuators, can_sends = controller.update(CC.as_reader(), CS, 30_000_000)
+    actuators, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 30_000_000)
     self.assertEqual(0, actuators.torqueOutputCan)
     self.assertEqual(normal_vsm1(), can_sends[0].dat)
 
     CC.latActive = True
-    _, can_sends = controller.update(CC.as_reader(), CS, 40_000_000)
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 40_000_000)
+    self.assertEqual(0, vsm1_torque(can_sends[0].dat))
+
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 240_000_000)
     self.assertEqual(10, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_on_steering_pressed_rising_edge(self):
     controller, CC, CS = self._setup_controller()
     CC.actuators.torque = -1.
 
-    _, can_sends = controller.update(CC.as_reader(), CS, 0)
+    _, can_sends = self._update(controller, CC, CS, 0)
+    self.assertEqual(0, vsm1_torque(can_sends[0].dat))
+
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
     self.assertEqual(10, vsm1_torque(can_sends[0].dat))
-    _, can_sends = controller.update(CC.as_reader(), CS, 10_000_000)
+
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
     self.assertEqual(20, vsm1_torque(can_sends[0].dat))
 
     CS.out.steeringPressed = True
-    _, can_sends = controller.update(CC.as_reader(), CS, 20_000_000)
+    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 20_000_000)
     self.assertEqual(10, vsm1_torque(can_sends[0].dat))
 
 

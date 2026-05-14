@@ -10,7 +10,7 @@ import opendbc.safety.tests.common as common
 class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
   TX_MSGS = [[0x164, 2]]
   STANDSTILL_THRESHOLD = 0.1
-  RELAY_MALFUNCTION_ADDRS = {2: (0x164,)}
+  RELAY_MALFUNCTION_ADDRS = {}
   FWD_BLACKLISTED_ADDRS = {2: [0x164]}
 
   MAX_RATE_UP = 10
