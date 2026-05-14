@@ -18,6 +18,8 @@ AVANTE_MD_DBC = "hyundai_avante_2012"
 
 class CarControllerParams:
   # VSM1 torque is encoded in 0.01 Nm units. The EPS-side API limit is 8.0 Nm.
+  # Avante MD VSM1 torque polarity is reversed from openpilot's lateral convention.
+  STEER_COMMAND_SIGN = -1
   STEER_MAX = 800
   STEER_DELTA_UP = 10
   STEER_DELTA_DOWN = 25

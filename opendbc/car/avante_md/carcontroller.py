@@ -24,7 +24,7 @@ class CarController(CarControllerBase):
 
     apply_torque = 0
     if control_ready:
-      new_torque = round(CC.actuators.torque * self.params.STEER_MAX)
+      new_torque = round(CC.actuators.torque * self.params.STEER_MAX * self.params.STEER_COMMAND_SIGN)
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, self.params)
       can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, True))
@@ -35,7 +35,7 @@ class CarController(CarControllerBase):
 
     new_actuators = CC.actuators.as_builder()
     if control_ready:
-      new_actuators.torque = apply_torque / self.params.STEER_MAX
+      new_actuators.torque = apply_torque / self.params.STEER_MAX * self.params.STEER_COMMAND_SIGN
       new_actuators.torqueOutputCan = apply_torque
     else:
       new_actuators.torque = 0.
