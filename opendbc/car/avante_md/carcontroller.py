@@ -11,6 +11,8 @@ class CarController(CarControllerBase):
     super().__init__(dbc_names, CP)
     self.params = CarControllerParams(CP)
     self.apply_torque_last = 0
+    self.control_ready_last = False
+    self.steering_pressed_last = False
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -22,17 +24,22 @@ class CarController(CarControllerBase):
                      vsm1_fresh and
                      not CS.out.steerFaultTemporary and
                      not CS.out.steerFaultPermanent)
+    reset_torque_history = (not self.control_ready_last or
+                            (CS.out.steeringPressed and not self.steering_pressed_last))
 
     apply_torque = 0
     if control_ready:
       new_torque = round(CC.actuators.torque * self.params.STEER_MAX * self.params.STEER_COMMAND_SIGN)
-      apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
+      torque_last = 0 if reset_torque_history else self.apply_torque_last
+      apply_torque = apply_driver_steer_torque_limits(new_torque, torque_last,
                                                       CS.out.steeringTorque, self.params)
       can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, apply_torque, True))
     elif CS.vsm1_rx_raw is not None:
       can_sends.append(CanData(VSM1, CS.vsm1_rx_raw, CanBus.EPS))
 
     self.apply_torque_last = apply_torque if control_ready else 0
+    self.control_ready_last = control_ready
+    self.steering_pressed_last = CS.out.steeringPressed
 
     new_actuators = CC.actuators.as_builder()
     if control_ready:
