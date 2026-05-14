@@ -35,11 +35,11 @@
 #define AVANTE_MD_TCU2_GEAR_R    14U
 
 // ── Steering torque safety limits (0.01 Nm units) ────────────────────────────
-// max 8.0 Nm, rate_up 0.1 Nm, rate_down 0.25 Nm, rt_delta 3.0 Nm, allowance 1.5 Nm
+// max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 1.5 Nm
 #define AVANTE_MD_MAX_STEER_TORQUE  800
-#define AVANTE_MD_MAX_RATE_UP        10
-#define AVANTE_MD_MAX_RATE_DOWN      25
-#define AVANTE_MD_MAX_RT_DELTA      300
+#define AVANTE_MD_MAX_RATE_UP       800
+#define AVANTE_MD_MAX_RATE_DOWN     800
+#define AVANTE_MD_MAX_RT_DELTA      800
 #define AVANTE_MD_DRIVER_ALLOWANCE  150
 
 // ── RX message state tracking ─────────────────────────────────────────────────
@@ -74,6 +74,7 @@ static bool avante_md_parking_brake_off    = false;
 // ── Openpilot VSM1 TX tracking ────────────────────────────────────────────────
 static bool     avante_md_vsm1_tx_seen      = false;
 static uint32_t avante_md_vsm1_tx_last_time = 0U;
+static bool     avante_md_steer_req_violation_latched = false;
 
 // ── TX-block stabilization tracking ──────────────────────────────────────────
 static bool     avante_md_block_seen      = false;
@@ -327,6 +328,7 @@ static void avante_md_disengage_controls(void) {
   controls_allowed   = false;
   desired_torque_last = 0;
   rt_torque_last     = 0;
+  avante_md_steer_req_violation_latched = false;
 }
 
 // Evaluates all TX-unblock prerequisites (condition 1: vehicle/EPS state).
@@ -398,7 +400,18 @@ static bool avante_md_vsm1_tx_torque_valid(const CANPacket_t *msg) {
 
   int  desired_torque = avante_md_get_vsm_torque(msg);
   bool steer_req      = (msg->data[1] & 0x10U) != 0U;
-  return !steer_torque_cmd_checks(desired_torque, steer_req, AVANTE_MD_STEERING_LIMITS);
+
+  if (desired_torque == 0) {
+    avante_md_steer_req_violation_latched = false;
+  } else if (avante_md_steer_req_violation_latched) {
+    return false;
+  }
+
+  bool torque_valid = !steer_torque_cmd_checks(desired_torque, steer_req, AVANTE_MD_STEERING_LIMITS);
+  if (!torque_valid && !steer_req && (desired_torque != 0)) {
+    avante_md_steer_req_violation_latched = true;
+  }
+  return torque_valid;
 }
 
 // Aggregated TX message validity (condition 2).
@@ -575,6 +588,7 @@ static void avante_md_reset_state(void) {
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
+  avante_md_steer_req_violation_latched = false;
 
   avante_md_block_seen      = false;
   avante_md_block_last_time = 0U;

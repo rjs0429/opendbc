@@ -21,8 +21,8 @@ class CarControllerParams:
   # Avante MD VSM1 torque polarity is reversed from openpilot's lateral convention.
   STEER_COMMAND_SIGN = -1
   STEER_MAX = 800
-  STEER_DELTA_UP = 10
-  STEER_DELTA_DOWN = 25
+  STEER_DELTA_UP = 800
+  STEER_DELTA_DOWN = 800
   STEER_DRIVER_ALLOWANCE = 150
   STEER_DRIVER_MULTIPLIER = 1
   STEER_DRIVER_FACTOR = 1
