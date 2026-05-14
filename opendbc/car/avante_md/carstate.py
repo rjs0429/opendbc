@@ -35,6 +35,8 @@ class CarState(CarStateBase):
     self.steer_fault_permanent = False
 
     self.lat_active = False
+    self.openpilot_enabled = False
+    self.should_be_active = False
 
   def update_vsm1_raw(self, can_packets):
     for t, frames in can_packets:
@@ -148,16 +150,18 @@ class CarState(CarStateBase):
     ret.cruiseState.nonAdaptive = False
 
     should_be_active = not unsafe_vehicle_state and not ret.steerFaultTemporary and not ret.steerFaultPermanent
+    self.should_be_active = should_be_active
     button_events = []
-    if should_be_active and not self.lat_active:
-      button_events.append(structs.CarState.ButtonEvent(type=ButtonType.accelCruise, pressed=False))
-      self.lat_active = True
-    elif not should_be_active and self.lat_active:
+    if not should_be_active and self.lat_active:
       button_events.append(structs.CarState.ButtonEvent(type=ButtonType.cancel, pressed=False))
-      self.lat_active = False
+    self.lat_active = should_be_active
     ret.buttonEvents = button_events
+    ret.buttonEnable = self.update_button_enable(button_events)
 
     return ret
+
+  def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
+    return self.should_be_active and not self.openpilot_enabled
 
   @staticmethod
   def get_can_parsers(CP):

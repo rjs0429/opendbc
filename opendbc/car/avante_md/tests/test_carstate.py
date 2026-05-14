@@ -94,16 +94,25 @@ class TestAvanteMdCarState(unittest.TestCase):
     ret = self._update()
 
     self.assertTrue(self.CS.lat_active)
-    self.assertEqual(1, len(ret.buttonEvents))
-    self.assertEqual(ButtonType.accelCruise, ret.buttonEvents[0].type)
-    self.assertFalse(ret.buttonEvents[0].pressed)
+    self.assertTrue(ret.buttonEnable)
+    self.assertFalse(ret.buttonEvents)
 
-  def test_no_duplicate_enable_event_when_already_active(self):
+  def test_auto_enable_persists_until_openpilot_enabled(self):
     self._update()  # enable
 
     ret = self._update()  # second safe frame
 
     self.assertTrue(self.CS.lat_active)
+    self.assertTrue(ret.buttonEnable)
+    self.assertFalse(ret.buttonEvents)
+
+  def test_auto_enable_clears_when_openpilot_enabled(self):
+    self.CS.openpilot_enabled = True
+
+    ret = self._update()
+
+    self.assertTrue(self.CS.lat_active)
+    self.assertFalse(ret.buttonEnable)
     self.assertFalse(ret.buttonEvents)
 
   def test_cancel_event_when_unsafe_state_entered(self):
@@ -156,7 +165,8 @@ class TestAvanteMdCarState(unittest.TestCase):
     ret = self._update()  # re-enable
 
     self.assertTrue(self.CS.lat_active)
-    self.assertEqual(ButtonType.accelCruise, ret.buttonEvents[0].type)
+    self.assertTrue(ret.buttonEnable)
+    self.assertFalse(ret.buttonEvents)
 
   def test_no_enable_while_unsafe_state(self):
     self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 1
