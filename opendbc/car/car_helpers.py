@@ -153,8 +153,11 @@ def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multip
   candidate, fingerprints, vin, car_fw, source, exact_match = fingerprint(can_recv, can_send, set_obd_multiplexing, cached_params)
 
   if candidate is None:
-    carlog.error({"event": "car doesn't match any fingerprints", "fingerprints": repr(fingerprints)})
-    candidate = "MOCK"
+    default_fingerprint = os.environ.get('DEFAULT_FINGERPRINT', "AVANTE_MD_2012")
+    carlog.error({"event": "car doesn't match any fingerprints, using default", "fingerprints": repr(fingerprints), "default": default_fingerprint})
+    candidate = default_fingerprint
+    source = CarParams.FingerprintSource.fixed
+    exact_match = True
 
   CarInterface = interfaces[candidate]
   CP: CarParams = CarInterface.get_params(candidate, fingerprints, car_fw, alpha_long_allowed, is_release, docs=False)
