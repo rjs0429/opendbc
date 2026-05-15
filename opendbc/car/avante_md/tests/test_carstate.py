@@ -225,6 +225,31 @@ class TestAvanteMdCarState(unittest.TestCase):
     ret = self._update()
     self.assertFalse(ret.seatbeltUnlatched)
 
+  # ── Steering torque sign convention ──────────────────────────────────────────
+  # CR_Mdps_StrTq positive = driver turning RIGHT (hardware convention).
+  # openpilot expects positive = LEFT, so the sign must be inverted.
+
+  def test_steering_torque_positive_raw_maps_to_negative_output(self):
+    # 5.0 Nm right-turn hardware signal → openpilot must report negative
+    self.eps["VSM2"]["CR_Mdps_StrTq"] = 5.0
+    ret = self._update()
+    self.assertEqual(-500, ret.steeringTorque)
+
+  def test_steering_torque_negative_raw_maps_to_positive_output(self):
+    # -5.0 Nm left-turn hardware signal → openpilot must report positive
+    self.eps["VSM2"]["CR_Mdps_StrTq"] = -5.0
+    ret = self._update()
+    self.assertEqual(500, ret.steeringTorque)
+
+  def test_steering_pressed_uses_absolute_value_of_corrected_torque(self):
+    # steeringPressed threshold is 150 (1.5 Nm); sign inversion must not break it
+    self.eps["VSM2"]["CR_Mdps_StrTq"] = 2.0   # 200 raw units after sign flip
+    ret = self._update()
+    # Need to call _update multiple times to clear the hysteresis filter
+    for _ in range(5):
+      ret = self._update()
+    self.assertTrue(ret.steeringPressed)
+
   # ── Longitudinal fields zeroed ────────────────────────────────────────────────
 
   def test_brake_and_gas_always_zero(self):

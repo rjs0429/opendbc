@@ -14,6 +14,7 @@ AVANTE_MAX_STEERING_TORQUE_NM = 10.
 AVANTE_MAX_STEERING_EPS_TORQUE_NM = 100.
 AVANTE_STEERING_PRESSED_THRESHOLD = 150  # 1.5 Nm in 0.01 Nm units, matches safety driver_allowance
 AVANTE_FAULT_PERMANENT_FRAMES = 10
+AVANTE_DRIVER_TORQUE_SIGN = -1  # VSM2 driver torque is right-positive; openpilot expects left-positive.
 
 
 class CarState(CarStateBase):
@@ -87,7 +88,7 @@ class CarState(CarStateBase):
     steering_torque_eps_nm = cp_eps.vl["VSM2"]["CR_Mdps_OutTq"]
     vsm2_torque_valid = (abs(steering_torque_nm) <= AVANTE_MAX_STEERING_TORQUE_NM and
                          abs(steering_torque_eps_nm) <= AVANTE_MAX_STEERING_EPS_TORQUE_NM)
-    ret.steeringTorque = 0 if vsm2_fault or not vsm2_torque_valid else round(steering_torque_nm * 100)
+    ret.steeringTorque = 0 if vsm2_fault or not vsm2_torque_valid else AVANTE_DRIVER_TORQUE_SIGN * round(steering_torque_nm * 100)
     ret.steeringTorqueEps = 0 if vsm2_fault or not vsm2_torque_valid else round(steering_torque_eps_nm * 100)
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > AVANTE_STEERING_PRESSED_THRESHOLD, 5)
 

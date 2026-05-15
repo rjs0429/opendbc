@@ -17,7 +17,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
   MAX_RATE_DOWN = 800
   MAX_TORQUE_LOOKUP = [0], [800]
   MAX_RT_DELTA = 800
-  DRIVER_TORQUE_ALLOWANCE = 150
+  DRIVER_TORQUE_ALLOWANCE = 200
   DRIVER_TORQUE_FACTOR = 1
 
   def setUp(self):
@@ -228,8 +228,10 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     return self._vsm1_msg(torque, steer_req=steer_req)
 
   def _torque_driver_msg(self, torque, bus=2):
+    # AVANTE_MD_DRIVER_TORQUE_SIGN = -1: negate so stored value matches the
+    # sign convention expected by the common driver-torque safety tests.
     self._last_driver_torque = torque
-    return self._vsm2_msg(torque=torque)
+    return self._vsm2_msg(torque=-torque)
 
   def _speed_msg(self, speed):
     # speed is in m/s; _tcs5_msg's parameter is also in m/s despite the name
@@ -296,7 +298,7 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.safety.safety_rx_hook(self._tcu1_msg())
     self.safety.safety_rx_hook(self._tcu2_msg())
     # EPS bus
-    self.safety.safety_rx_hook(self._vsm2_msg(torque=self._last_driver_torque))
+    self.safety.safety_rx_hook(self._vsm2_msg(torque=-self._last_driver_torque))
     self.safety.safety_rx_hook(self._sas1_msg())
     self.safety.safety_rx_hook(self._mdps1_msg())
 
@@ -459,6 +461,15 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._tcu2_msg(gear=0))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._refresh_prereqs_on_tx = False
+    self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
+
+  def test_gear_reverse_tcu2_blocks_tx_and_disengages(self):
+    """TCU2.CUR_GR == 14 has a valid checksum but must still disengage."""
+    self._set_prereqs_normal_and_stabilized()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.safety_rx_hook(self._tcu2_msg(gear=14))
     self.assertFalse(self.safety.get_controls_allowed())
     self._refresh_prereqs_on_tx = False
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
@@ -810,9 +821,11 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.safety.safety_rx_hook(common.make_msg(0, 0x165, 8, bytes(dat)))
     self.assertEqual(0, self.safety.get_torque_driver_min())
     self.assertEqual(0, self.safety.get_torque_driver_max())
-    # Same frame on bus 2 must be accepted
+    # Same frame on bus 2 must be accepted.
+    # AVANTE_MD_DRIVER_TORQUE_SIGN=-1: positive VSM2 torque is stored as negative,
+    # so verify via torque_driver_min rather than max.
     self.safety.safety_rx_hook(self._vsm2_msg(torque=300))
-    self.assertGreater(self.safety.get_torque_driver_max(), 0)
+    self.assertLess(self.safety.get_torque_driver_min(), 0)
 
   # ── Steer safety check override (controls_allowed is auto-managed) ───────
 

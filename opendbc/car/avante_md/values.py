@@ -17,12 +17,13 @@ AVANTE_MD_DBC = "hyundai_avante_2012"
 
 
 class CarControllerParams:
-  # VSM1 torque is encoded in 0.01 Nm units. The EPS-side API limit is 8.0 Nm.
-  STEER_COMMAND_SIGN = 1
-  STEER_MAX = 500
+  # VSM1 command safety allows up to 8.0 Nm;
+  # the controller currently caps requests at 5.0 Nm.
+  STEER_COMMAND_SIGN = 1  # VSM1 command torque is left-positive.
+  STEER_MAX = 800
   STEER_DELTA_UP = 500
   STEER_DELTA_DOWN = 500
-  STEER_DRIVER_ALLOWANCE = 150
+  STEER_DRIVER_ALLOWANCE = 200
   STEER_DRIVER_MULTIPLIER = 1
   STEER_DRIVER_FACTOR = 1
   STEER_STEP = 1  # 100 Hz
@@ -50,7 +51,7 @@ class AvanteMdPlatformConfig(PlatformConfig):
 class CAR(Platforms):
   AVANTE_MD_2012 = AvanteMdPlatformConfig(
     [AvanteMdCarDocs("Hyundai Avante 2012")],
-    CarSpecs(mass=1525, wheelbase=2.70, steerRatio=14.2, tireStiffnessFactor=0.385),
+    CarSpecs(mass=1525, wheelbase=2.70, steerRatio=14.65, tireStiffnessFactor=0.385),
   )
 
 

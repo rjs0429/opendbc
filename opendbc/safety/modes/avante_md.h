@@ -33,6 +33,7 @@
 #define AVANTE_MD_TCU2_GEAR_MIN  1U
 #define AVANTE_MD_TCU2_GEAR_MAX  6U
 #define AVANTE_MD_TCU2_GEAR_R    14U
+#define AVANTE_MD_DRIVER_TORQUE_SIGN (-1)
 
 // ── Steering torque safety limits (0.01 Nm units) ────────────────────────────
 // max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 1.5 Nm
@@ -40,7 +41,7 @@
 #define AVANTE_MD_MAX_RATE_UP       800
 #define AVANTE_MD_MAX_RATE_DOWN     800
 #define AVANTE_MD_MAX_RT_DELTA      800
-#define AVANTE_MD_DRIVER_ALLOWANCE  150
+#define AVANTE_MD_DRIVER_ALLOWANCE  200
 
 // ── RX message state tracking ─────────────────────────────────────────────────
 typedef struct {
@@ -400,17 +401,20 @@ static bool avante_md_vsm1_tx_torque_valid(const CANPacket_t *msg) {
 
   int  desired_torque = avante_md_get_vsm_torque(msg);
   bool steer_req      = (msg->data[1] & 0x10U) != 0U;
+  bool torque_valid;
 
   if (desired_torque == 0) {
     avante_md_steer_req_violation_latched = false;
+    torque_valid = !steer_torque_cmd_checks(desired_torque, steer_req, AVANTE_MD_STEERING_LIMITS);
   } else if (avante_md_steer_req_violation_latched) {
-    return false;
+    torque_valid = false;
+  } else {
+    torque_valid = !steer_torque_cmd_checks(desired_torque, steer_req, AVANTE_MD_STEERING_LIMITS);
+    if (!torque_valid && !steer_req) {
+      avante_md_steer_req_violation_latched = true;
+    }
   }
 
-  bool torque_valid = !steer_torque_cmd_checks(desired_torque, steer_req, AVANTE_MD_STEERING_LIMITS);
-  if (!torque_valid && !steer_req && (desired_torque != 0)) {
-    avante_md_steer_req_violation_latched = true;
-  }
   return torque_valid;
 }
 
@@ -492,7 +496,7 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == AVANTE_MD_VSM2) {
       avante_md_update_rx_state(&avante_md_vsm2_state, now);
       avante_md_vsm2_normal = avante_md_vsm2_fault_free(msg);
-      update_sample(&torque_driver, avante_md_get_vsm_torque(msg));
+      update_sample(&torque_driver, AVANTE_MD_DRIVER_TORQUE_SIGN * avante_md_get_vsm_torque(msg));
     }
 
     if (msg->addr == AVANTE_MD_SAS1) {

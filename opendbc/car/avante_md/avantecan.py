@@ -3,7 +3,7 @@ from opendbc.car.avante_md.values import CanBus
 
 VSM1 = 0x164
 VSM1_ACTIVE_CTR_MODE = 2
-VSM1_STALE_NANOS = 50_000_000
+VSM1_STALE_NANOS = 75_000_000
 
 
 def vsm1_checksum(dat: bytes | bytearray) -> int:
