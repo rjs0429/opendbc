@@ -20,6 +20,8 @@ class CarControllerParams:
   # VSM1 command safety allows up to 8.0 Nm; controller is capped at 8.0 Nm (STEER_MAX=800).
   STEER_COMMAND_SIGN = 1  # VSM1 command torque is left-positive.
   STEER_MAX = 800
+  STEER_LOW_SPEED_CAP_KPH_BP = [0., 10., 20., 30.]
+  STEER_LOW_SPEED_CAP_V = [120, 180, 350, 500]
   STEER_DELTA_UP = 300
   STEER_DELTA_DOWN = 300
   STEER_DRIVER_ALLOWANCE = 100

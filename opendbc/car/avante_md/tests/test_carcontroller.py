@@ -6,6 +6,7 @@ from opendbc.car.avante_md.avantecan import VSM1, vsm1_checksum
 from opendbc.car.avante_md.carcontroller import AVANTE_CONTROL_READY_STABILIZE_NANOS, CarController
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus
+from opendbc.car.common.conversions import Conversions as CV
 
 
 def normal_vsm1():
@@ -27,15 +28,17 @@ class FakeCarState:
     self.vsm1_normal = True
     self.openpilot_enabled = False
     self.out = structs.CarState()
+    self.out.vEgo = 31 * CV.KPH_TO_MS
 
 
 class TestAvanteMdCarController(unittest.TestCase):
-  def _setup_controller(self):
+  def _setup_controller(self, v_ego_kph: float = 31.):
     CP = CarInterface.get_params(CAR.AVANTE_MD_2012, gen_empty_fingerprint(), [], False, False, False)
     CC = structs.CarControl.new_message()
     CC.latActive = True
     controller = CarController({}, CP)
     CS = FakeCarState()
+    CS.out.vEgo = v_ego_kph * CV.KPH_TO_MS
     return controller, CC, CS
 
   @staticmethod
@@ -43,8 +46,8 @@ class TestAvanteMdCarController(unittest.TestCase):
     CS.vsm1_rx_nanos = now_nanos
     return controller.update(CC.as_reader(), CS, now_nanos)
 
-  def _update_with_torque(self, torque: float, enabled: bool = False):
-    controller, CC, CS = self._setup_controller()
+  def _update_with_torque(self, torque: float, enabled: bool = False, v_ego_kph: float = 31.):
+    controller, CC, CS = self._setup_controller(v_ego_kph)
     CC.enabled = enabled
     CC.actuators.torque = torque
 
@@ -78,6 +81,11 @@ class TestAvanteMdCarController(unittest.TestCase):
     _, _, CS = self._update_with_torque(0., enabled=False)
     self.assertFalse(CS.openpilot_enabled)
 
+  def test_low_speed_torque_is_capped(self):
+    _, torque, _ = self._update_with_torque(1., v_ego_kph=5.)
+
+    self.assertEqual(150, torque)
+
   def test_torque_ramps_from_zero_at_safety_rate(self):
     controller, CC, CS = self._setup_controller()
     CC.actuators.torque = -1.
@@ -86,10 +94,10 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    self.assertEqual(-500, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
-    self.assertEqual(-800, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-600, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_after_lat_inactive(self):
     controller, CC, CS = self._setup_controller()
@@ -108,7 +116,7 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 240_000_000)
-    self.assertEqual(-500, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_on_steering_pressed_rising_edge(self):
     controller, CC, CS = self._setup_controller()
@@ -118,14 +126,14 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    self.assertEqual(-500, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
-    self.assertEqual(-800, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-600, vsm1_torque(can_sends[0].dat))
 
     CS.out.steeringPressed = True
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 20_000_000)
-    self.assertEqual(-500, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
 
 
 if __name__ == "__main__":
