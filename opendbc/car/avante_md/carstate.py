@@ -1,3 +1,5 @@
+import time
+
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
@@ -15,6 +17,68 @@ AVANTE_MAX_STEERING_EPS_TORQUE_NM = 100.
 AVANTE_STEERING_PRESSED_THRESHOLD = 150  # 1.5 Nm in 0.01 Nm units, matches safety driver_allowance
 AVANTE_FAULT_PERMANENT_FRAMES = 10
 AVANTE_DRIVER_TORQUE_SIGN = -1  # VSM2 driver torque is right-positive; openpilot expects left-positive.
+
+
+class MomentaryButtonDoubleClick:
+  DOUBLE_CLICK_INTERVAL = 1.0  # seconds
+  DEBOUNCE_FRAMES = 3  # 30 ms at 100 Hz CAN
+
+  def __init__(self):
+    self._prev_btn: int | None = None
+    self._raw_btn: int | None = None
+    self._raw_count: int = 0
+    self._last_click_time: float | None = None
+
+  def reset(self) -> tuple[bool, bool]:
+    had_pending = self._last_click_time is not None
+    self._prev_btn = None
+    self._raw_btn = None
+    self._raw_count = 0
+    self._last_click_time = None
+    return had_pending, False
+
+  def update(self, current_btn: int) -> tuple[bool, bool]:
+    now = time.monotonic()
+    current_btn = 1 if current_btn else 0
+
+    if current_btn == self._raw_btn:
+      if self._raw_count < self.DEBOUNCE_FRAMES:
+        self._raw_count += 1
+    else:
+      self._raw_btn = current_btn
+      self._raw_count = 1
+    if self._raw_count < self.DEBOUNCE_FRAMES:
+      return False, False
+
+    # First call: sync prev state without emitting a spurious edge.
+    if self._prev_btn is None:
+      self._prev_btn = current_btn
+      return False, False
+
+    rising_edge = (self._prev_btn == 0) and (current_btn == 1)
+    self._prev_btn = current_btn
+
+    single_click = False
+    double_click = False
+
+    if rising_edge:
+      if self._last_click_time is not None:
+        elapsed = now - self._last_click_time
+        if elapsed <= self.DOUBLE_CLICK_INTERVAL:
+          double_click = True
+          self._last_click_time = None
+        else:
+          # Timeout expired before second press: report first as single, start new sequence.
+          single_click = True
+          self._last_click_time = now
+      else:
+        self._last_click_time = now
+    elif self._last_click_time is not None:
+      if (now - self._last_click_time) > self.DOUBLE_CLICK_INTERVAL:
+        single_click = True
+        self._last_click_time = None
+
+    return single_click, double_click
 
 
 class CarState(CarStateBase):
@@ -38,6 +102,9 @@ class CarState(CarStateBase):
     self.lat_active = False
     self.openpilot_enabled = False
     self.should_be_active = False
+
+    self.eco_btn = MomentaryButtonDoubleClick()
+    self.openpilot_requested = True
 
   def update_vsm1_raw(self, can_packets):
     for t, frames in can_packets:
@@ -152,17 +219,24 @@ class CarState(CarStateBase):
 
     should_be_active = not unsafe_vehicle_state and not ret.steerFaultTemporary and not ret.steerFaultPermanent
     self.should_be_active = should_be_active
+
+    eco_signal = int(cp_vehicle.vl["CLU2"]["CF_Clu_ActiveEcoSW"])
+    _, eco_double_click = self.eco_btn.update(eco_signal)
+    if eco_double_click:
+      self.openpilot_requested = not self.openpilot_requested
+
+    effective_active = should_be_active and self.openpilot_requested
     button_events = []
-    if not should_be_active and self.lat_active:
+    if self.lat_active and not effective_active:
       button_events.append(structs.CarState.ButtonEvent(type=ButtonType.cancel, pressed=False))
-    self.lat_active = should_be_active
+    self.lat_active = effective_active
     ret.buttonEvents = button_events
     ret.buttonEnable = self.update_button_enable(button_events)
 
     return ret
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
-    return self.should_be_active and not self.openpilot_enabled
+    return self.lat_active and not self.openpilot_enabled
 
   @staticmethod
   def get_can_parsers(CP):

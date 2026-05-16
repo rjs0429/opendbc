@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from opendbc.car import Bus, gen_empty_fingerprint, structs
 from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum
-from opendbc.car.avante_md.carstate import AVANTE_FAULT_PERMANENT_FRAMES, CarState
+from opendbc.car.avante_md.carstate import AVANTE_FAULT_PERMANENT_FRAMES, CarState, MomentaryButtonDoubleClick
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus
 
@@ -73,6 +73,24 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.CS.update_vsm1_raw([(self.nanos, [])])
     return self.CS.update(self.parsers)
 
+  def _eco_double_click(self):
+    D = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+      self._update()
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
+      self._update()
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+      self._update()
+    ret = None
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
+      ret = self._update()
+    self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+    return ret
+
   # ── Interface params ──────────────────────────────────────────────────────────
 
   def test_interface_params_are_lat_only_and_allow_standstill_steering(self):
@@ -88,25 +106,64 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertTrue(CP.steerAtStandstill)
     self.assertEqual(structs.CarParams.SteerControlType.torque, CP.steerControlType)
 
-  # ── Auto-enable / lateral enable logic ───────────────────────────────────────
+  # ── Default request / Eco double-click toggle ────────────────────────────────
 
-  def test_auto_enable_on_first_safe_frame(self):
+  def test_default_request_enables_openpilot(self):
+    ret = self._update()
+
+    self.assertTrue(self.CS.openpilot_requested)
+    self.assertTrue(self.CS.lat_active)
+    self.assertTrue(ret.buttonEnable)
+    self.assertFalse(ret.buttonEvents)
+
+  def test_eco_double_click_disables_openpilot(self):
+    self._update()  # default request enables
+    ret = self._eco_double_click()
+
+    self.assertFalse(self.CS.openpilot_requested)
+    self.assertFalse(self.CS.lat_active)
+    self.assertFalse(ret.buttonEnable)
+
+  def test_eco_single_click_does_not_disable(self):
+    D = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
+      self._update()
+    self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+    ret = self._update()
+
+    self.assertTrue(self.CS.openpilot_requested)
+    self.assertTrue(self.CS.lat_active)
+    self.assertTrue(ret.buttonEnable)
+
+  def test_eco_double_click_toggles_back_on(self):
+    self._eco_double_click()  # disable
+    ret = self._eco_double_click()  # enable
+
+    self.assertTrue(self.CS.openpilot_requested)
+    self.assertTrue(self.CS.lat_active)
+    self.assertTrue(ret.buttonEnable)
+    self.assertFalse(ret.buttonEvents)
+
+  def test_cancel_fires_when_eco_disables(self):
+    self._update()  # default request enables
+    ret = self._eco_double_click()  # disable
+
+    self.assertEqual(1, len(ret.buttonEvents))
+    self.assertEqual(ButtonType.cancel, ret.buttonEvents[0].type)
+    self.assertFalse(ret.buttonEvents[0].pressed)
+
+  def test_button_enable_persists_until_openpilot_enabled(self):
+    self._update()  # default request enables
+
     ret = self._update()
 
     self.assertTrue(self.CS.lat_active)
     self.assertTrue(ret.buttonEnable)
     self.assertFalse(ret.buttonEvents)
 
-  def test_auto_enable_persists_until_openpilot_enabled(self):
-    self._update()  # enable
-
-    ret = self._update()  # second safe frame
-
-    self.assertTrue(self.CS.lat_active)
-    self.assertTrue(ret.buttonEnable)
-    self.assertFalse(ret.buttonEvents)
-
-  def test_auto_enable_clears_when_openpilot_enabled(self):
+  def test_button_enable_clears_when_openpilot_enabled(self):
+    self._update()  # default request enables
     self.CS.openpilot_enabled = True
 
     ret = self._update()
@@ -116,7 +173,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(ret.buttonEvents)
 
   def test_cancel_event_when_unsafe_state_entered(self):
-    self._update()  # enable
+    self._update()  # default request enables
 
     self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 1
     ret = self._update()
@@ -127,7 +184,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(ret.buttonEvents[0].pressed)
 
   def test_cancel_event_fires_only_once_per_transition(self):
-    self._update()  # enable
+    self._update()  # default request enables
 
     self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 1
     self._update()  # cancel
@@ -138,7 +195,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(ret.buttonEvents)
 
   def test_cancel_on_temporary_steer_fault(self):
-    self._update()  # enable
+    self._update()  # default request enables
 
     self.eps["SAS1"]["SAS_Stat"] = 0
     ret = self._update()
@@ -147,7 +204,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertEqual(ButtonType.cancel, ret.buttonEvents[0].type)
 
   def test_cancel_on_permanent_steer_fault(self):
-    self._update()  # enable
+    self._update()  # default request enables
 
     self.CS.steer_fault_permanent = True
     ret = self._update()
@@ -155,14 +212,22 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(self.CS.lat_active)
     self.assertEqual(ButtonType.cancel, ret.buttonEvents[0].type)
 
-  def test_re_enable_after_unsafe_clears(self):
-    self._update()  # enable
+  def test_eco_stays_armed_on_unsafe_condition(self):
+    self._update()  # default request enables
+
+    self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 1
+    self._update()  # cancel, openpilot_requested stays armed
+
+    self.assertTrue(self.CS.openpilot_requested)
+
+  def test_eco_reactivates_after_unsafe_clears(self):
+    self._update()  # default request enables
 
     self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 1
     self._update()  # cancel
 
     self.vehicle["CLU1"]["CF_Clu_ParkBrakeSw"] = 0
-    ret = self._update()  # re-enable
+    ret = self._update()  # conditions safe, openpilot_requested=True
 
     self.assertTrue(self.CS.lat_active)
     self.assertTrue(ret.buttonEnable)
@@ -182,7 +247,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.vehicle["TCU2"]["CUR_GR"] = 3
     ret = self._update()
     self.assertEqual(GearShifter.drive, ret.gearShifter)
-    self.assertTrue(self.CS.lat_active)
+    self.assertTrue(self.CS.should_be_active)
 
   def test_gear_not_drive_when_tcu1_not_5(self):
     self.vehicle["TCU1"]["CUR_GR"] = 3  # not drive
