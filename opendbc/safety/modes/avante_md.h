@@ -36,7 +36,7 @@
 #define AVANTE_MD_DRIVER_TORQUE_SIGN (-1)
 
 // ── Steering torque safety limits (0.01 Nm units) ────────────────────────────
-// max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 1.5 Nm
+// max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 2.0 Nm
 #define AVANTE_MD_MAX_STEER_TORQUE  800
 #define AVANTE_MD_MAX_RATE_UP       800
 #define AVANTE_MD_MAX_RATE_DOWN     800

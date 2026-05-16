@@ -17,8 +17,7 @@ AVANTE_MD_DBC = "hyundai_avante_2012"
 
 
 class CarControllerParams:
-  # VSM1 command safety allows up to 8.0 Nm;
-  # the controller currently caps requests at 5.0 Nm.
+  # VSM1 command safety allows up to 8.0 Nm; controller is capped at 8.0 Nm (STEER_MAX=800).
   STEER_COMMAND_SIGN = 1  # VSM1 command torque is left-positive.
   STEER_MAX = 800
   STEER_DELTA_UP = 500
