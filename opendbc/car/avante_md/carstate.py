@@ -3,7 +3,7 @@ import time
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
-from opendbc.car.avante_md.values import CanBus, DBC
+from opendbc.car.avante_md.values import CanBus, CarControllerParams, DBC
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 
@@ -14,13 +14,12 @@ AVANTE_MAX_WHEEL_SPEED_KPH = 220.
 AVANTE_MAX_WHEEL_SPEED_SPREAD_KPH = 20.
 AVANTE_MAX_STEERING_TORQUE_NM = 10.
 AVANTE_MAX_STEERING_EPS_TORQUE_NM = 100.
-AVANTE_STEERING_PRESSED_THRESHOLD = 150  # 1.5 Nm in 0.01 Nm units, matches safety driver_allowance
 AVANTE_FAULT_PERMANENT_FRAMES = 10
 AVANTE_DRIVER_TORQUE_SIGN = -1  # VSM2 driver torque is right-positive; openpilot expects left-positive.
 
 
 class MomentaryButtonDoubleClick:
-  DOUBLE_CLICK_INTERVAL = 1.0  # seconds
+  DOUBLE_CLICK_INTERVAL = 3.0  # seconds
   DEBOUNCE_FRAMES = 3  # 30 ms at 100 Hz CAN
 
   def __init__(self):
@@ -157,7 +156,7 @@ class CarState(CarStateBase):
                          abs(steering_torque_eps_nm) <= AVANTE_MAX_STEERING_EPS_TORQUE_NM)
     ret.steeringTorque = 0 if vsm2_fault or not vsm2_torque_valid else AVANTE_DRIVER_TORQUE_SIGN * round(steering_torque_nm * 100)
     ret.steeringTorqueEps = 0 if vsm2_fault or not vsm2_torque_valid else round(steering_torque_eps_nm * 100)
-    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > AVANTE_STEERING_PRESSED_THRESHOLD, 5)
+    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > CarControllerParams.STEER_DRIVER_ALLOWANCE, 5)
 
     vsm1_stale = self.vsm1_rx_raw is None or (self.can_update_nanos - self.vsm1_rx_nanos) > VSM1_STALE_NANOS
     vsm1_checksum_invalid = not vsm1_stale and not vsm1_checksum_valid(self.vsm1_rx_raw)
