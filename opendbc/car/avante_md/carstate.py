@@ -54,13 +54,13 @@ class MomentaryButtonDoubleClick:
       self._prev_btn = current_btn
       return False, False
 
-    rising_edge = (self._prev_btn == 0) and (current_btn == 1)
+    any_edge = (self._prev_btn != current_btn)
     self._prev_btn = current_btn
 
     single_click = False
     double_click = False
 
-    if rising_edge:
+    if any_edge:
       if self._last_click_time is not None:
         elapsed = now - self._last_click_time
         if elapsed <= self.DOUBLE_CLICK_INTERVAL:

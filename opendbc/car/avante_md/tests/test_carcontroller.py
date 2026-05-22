@@ -5,7 +5,7 @@ from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.avante_md.avantecan import VSM1, vsm1_checksum
 from opendbc.car.avante_md.carcontroller import AVANTE_CONTROL_READY_STABILIZE_NANOS, CarController
 from opendbc.car.avante_md.interface import CarInterface
-from opendbc.car.avante_md.values import CAR, CanBus
+from opendbc.car.avante_md.values import CAR, CanBus, CarControllerParams
 from opendbc.car.common.conversions import Conversions as CV
 
 
@@ -82,9 +82,16 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertFalse(CS.openpilot_enabled)
 
   def test_low_speed_torque_is_capped(self):
-    _, torque, _ = self._update_with_torque(1., v_ego_kph=5.)
+    controller, CC, CS = self._setup_controller(v_ego_kph=5.)
+    CC.actuators.torque = 1.
 
-    self.assertEqual(150, torque)
+    self._update(controller, CC, CS, 0)
+    torque = None
+    for frame in range(5):
+      _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + frame * 10_000_000)
+      torque = vsm1_torque(can_sends[0].dat)
+
+    self.assertEqual(375, torque)
 
   def test_torque_ramps_from_zero_at_safety_rate(self):
     controller, CC, CS = self._setup_controller()
@@ -94,10 +101,10 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
-    self.assertEqual(-600, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-2 * CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_after_lat_inactive(self):
     controller, CC, CS = self._setup_controller()
@@ -116,7 +123,7 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 240_000_000)
-    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
   def test_torque_restarts_on_steering_pressed_rising_edge(self):
     controller, CC, CS = self._setup_controller()
@@ -126,14 +133,14 @@ class TestAvanteMdCarController(unittest.TestCase):
     self.assertEqual(0, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
-    self.assertEqual(-600, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-2 * CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
     CS.out.steeringPressed = True
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 20_000_000)
-    self.assertEqual(-300, vsm1_torque(can_sends[0].dat))
+    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
 
 if __name__ == "__main__":

@@ -75,20 +75,17 @@ class TestAvanteMdCarState(unittest.TestCase):
 
   def _eco_double_click(self):
     D = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
+    # CF_Clu_ActiveEcoSW is a state toggle, so two stable edges are one double-click.
     for _ in range(D):
       self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
       self._update()
     for _ in range(D):
       self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
-      self._update()
-    for _ in range(D):
-      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
       self._update()
     ret = None
     for _ in range(D):
-      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
       ret = self._update()
-    self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
     return ret
 
   # ── Interface params ──────────────────────────────────────────────────────────
