@@ -81,26 +81,6 @@ class TestAvanteMdCarController(unittest.TestCase):
     _, _, CS = self._update_with_torque(0., enabled=False)
     self.assertFalse(CS.openpilot_enabled)
 
-  def test_low_speed_torque_is_capped(self):
-    v_ego_kph = 5.
-    controller, CC, CS = self._setup_controller(v_ego_kph=v_ego_kph)
-    CC.actuators.torque = 1.
-    low_speed_cap = round(
-      CarControllerParams.STEER_LOW_SPEED_CAP_V[0] +
-      (CarControllerParams.STEER_LOW_SPEED_CAP_V[1] - CarControllerParams.STEER_LOW_SPEED_CAP_V[0]) *
-      (v_ego_kph - CarControllerParams.STEER_LOW_SPEED_CAP_KPH_BP[0]) /
-      (CarControllerParams.STEER_LOW_SPEED_CAP_KPH_BP[1] - CarControllerParams.STEER_LOW_SPEED_CAP_KPH_BP[0])
-    )
-    ramp_frames = low_speed_cap // CarControllerParams.STEER_DELTA_UP + 5
-
-    self._update(controller, CC, CS, 0)
-    torque = None
-    for frame in range(ramp_frames):
-      _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + frame * 10_000_000)
-      torque = vsm1_torque(can_sends[0].dat)
-
-    self.assertEqual(low_speed_cap, torque)
-
   def test_torque_ramps_from_zero_at_safety_rate(self):
     controller, CC, CS = self._setup_controller()
     CC.actuators.torque = -1.

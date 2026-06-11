@@ -1,9 +1,6 @@
-import numpy as np
-
 from opendbc.car.avante_md import avantecan
 from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS
 from opendbc.car.avante_md.values import CanBus, CarControllerParams
-from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.can_definitions import CanData
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_driver_steer_torque_limits
@@ -44,12 +41,6 @@ class CarController(CarControllerBase):
     apply_torque = 0
     if control_ready_stable:
       new_torque = round(CC.actuators.torque * self.params.STEER_MAX * self.params.STEER_COMMAND_SIGN)
-      v_ego_kph = CS.out.vEgo * CV.MS_TO_KPH
-      if v_ego_kph <= self.params.STEER_LOW_SPEED_CAP_KPH_BP[-1]:
-        low_speed_cap = round(float(np.interp(v_ego_kph,
-                                              self.params.STEER_LOW_SPEED_CAP_KPH_BP,
-                                              self.params.STEER_LOW_SPEED_CAP_V)))
-        new_torque = int(np.clip(new_torque, -low_speed_cap, low_speed_cap))
       torque_last = 0 if reset_torque_history else self.apply_torque_last
       apply_torque = apply_driver_steer_torque_limits(new_torque, torque_last,
                                                       CS.out.steeringTorque, self.params)
