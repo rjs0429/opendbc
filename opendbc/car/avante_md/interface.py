@@ -28,7 +28,7 @@ class CarInterface(CarInterfaceBase):
     ret.minSteerSpeed = 0.
     ret.centerToFront = ret.wheelbase * 0.4
 
-    CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
+    CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning, steering_angle_deadzone_deg=1.0)
 
     return ret
 

@@ -16,7 +16,6 @@ class CarController(CarControllerBase):
     self.control_ready_last = False
     self.control_ready_stable_last = False
     self.control_ready_start_nanos = 0
-    self.steering_pressed_last = False
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -35,8 +34,7 @@ class CarController(CarControllerBase):
       self.control_ready_start_nanos = 0
     control_ready_stable = (control_ready and
                             (now_nanos - self.control_ready_start_nanos) >= AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    reset_torque_history = (not self.control_ready_stable_last or
-                            (CS.out.steeringPressed and not self.steering_pressed_last))
+    reset_torque_history = not self.control_ready_stable_last
 
     apply_torque = 0
     if control_ready_stable:
@@ -53,7 +51,6 @@ class CarController(CarControllerBase):
     self.apply_torque_last = apply_torque if control_ready_stable else 0
     self.control_ready_last = control_ready
     self.control_ready_stable_last = control_ready_stable
-    self.steering_pressed_last = CS.out.steeringPressed
 
     new_actuators = CC.actuators.as_builder()
     if control_ready_stable:
