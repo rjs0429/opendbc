@@ -1,7 +1,7 @@
 VERSION ""
 
 
-NS_ : 
+NS_ :
     NS_DESC_
     CM_
     BA_DEF_
@@ -275,10 +275,9 @@ BO_ 790 EMS1: 8 XXX
 
 BO_ 809 EMS2: 8 XXX
     SG_ MUL_CODE M : 6|2@1+ (1,0) [0|3] "" XXX
-
-    SG_ TQ_STND   m0 : 0|6@1+ (10,0) [0|630] "Nm" XXX
-    SG_ CAN_VERS  m1 : 0|6@1+ (1,0)  [0|63]  "" XXX
-    SG_ CONF_TCU  m2 : 0|6@1+ (1,0)  [0|63]  "" XXX
+    SG_ TQ_STND m0 : 0|6@1+ (10,0) [0|630] "Nm" XXX
+    SG_ CAN_VERS m1 : 0|6@1+ (1,0) [0|63] "" XXX
+    SG_ CONF_TCU m2 : 0|6@1+ (1,0) [0|63] "" XXX
     SG_ OBD_FRF_ACK m3 : 0|6@1+ (1,0) [0|63] "" XXX
 
 
