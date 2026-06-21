@@ -246,6 +246,22 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertEqual(GearShifter.drive, ret.gearShifter)
     self.assertTrue(self.CS.should_be_active)
 
+  def test_gear_sport_is_drivable(self):
+    self.vehicle["TCU1"]["CUR_GR"] = 8
+    self.vehicle["TCU2"]["CUR_GR"] = 3
+    ret = self._update()
+    self.assertEqual(GearShifter.sport, ret.gearShifter)
+    self.assertTrue(self.CS.should_be_active)
+    self.assertTrue(self.CS.lat_active)
+    self.assertIn(GearShifter.sport, CarInterface.DRIVABLE_GEARS)
+
+  def test_gear_sport_requires_forward_tcu2_gear(self):
+    self.vehicle["TCU1"]["CUR_GR"] = 8
+    self.vehicle["TCU2"]["CUR_GR"] = 0
+    ret = self._update()
+    self.assertEqual(GearShifter.unknown, ret.gearShifter)
+    self.assertFalse(self.CS.lat_active)
+
   def test_gear_not_drive_when_tcu1_not_5(self):
     self.vehicle["TCU1"]["CUR_GR"] = 3  # not drive
     self.vehicle["TCU2"]["CUR_GR"] = 3
@@ -261,14 +277,28 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(self.CS.lat_active)
 
   def test_gear_reverse_from_tcu2(self):
-    self.vehicle["TCU1"]["CUR_GR"] = 5
+    self.vehicle["TCU1"]["CUR_GR"] = 7
     self.vehicle["TCU2"]["CUR_GR"] = 14
     ret = self._update()
     self.assertEqual(GearShifter.reverse, ret.gearShifter)
     self.assertFalse(self.CS.lat_active)
 
-  def test_gear_unknown_falls_through(self):
+  def test_gear_park_from_tcu1_and_tcu2(self):
     self.vehicle["TCU1"]["CUR_GR"] = 0
+    self.vehicle["TCU2"]["CUR_GR"] = 0
+    ret = self._update()
+    self.assertEqual(GearShifter.park, ret.gearShifter)
+    self.assertFalse(self.CS.lat_active)
+
+  def test_gear_neutral_from_tcu1_and_tcu2(self):
+    self.vehicle["TCU1"]["CUR_GR"] = 6
+    self.vehicle["TCU2"]["CUR_GR"] = 0
+    ret = self._update()
+    self.assertEqual(GearShifter.neutral, ret.gearShifter)
+    self.assertFalse(self.CS.lat_active)
+
+  def test_gear_unknown_falls_through(self):
+    self.vehicle["TCU1"]["CUR_GR"] = 3
     self.vehicle["TCU2"]["CUR_GR"] = 0
     ret = self._update()
     self.assertEqual(GearShifter.unknown, ret.gearShifter)

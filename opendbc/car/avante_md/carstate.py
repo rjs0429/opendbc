@@ -195,18 +195,27 @@ class CarState(CarStateBase):
                         cp_vehicle.vl["CLU2"]["CF_Clu_AstDrSw"])
     ret.seatbeltUnlatched = cp_vehicle.vl["CLU2"]["CF_Clu_DrvSeatBeltSw"] != 0
 
-    tcu1_drive = cp_vehicle.vl["TCU1"]["CUR_GR"] == 5
+    tcu1_cur_gr = int(cp_vehicle.vl["TCU1"]["CUR_GR"])
     tcu2_cur_gr = int(cp_vehicle.vl["TCU2"]["CUR_GR"])
-    tcu2_drive = 1 <= tcu2_cur_gr <= 6
-    if tcu1_drive and tcu2_drive:
+    tcu1_drive = tcu1_cur_gr == 5
+    tcu1_sport = tcu1_cur_gr == 8
+    tcu2_forward = 1 <= tcu2_cur_gr <= 6
+    if tcu1_drive and tcu2_forward:
       gear_str = "D"
-    elif tcu2_cur_gr == 14:
+    elif tcu1_sport and tcu2_forward:
+      gear_str = "S"
+    elif tcu1_cur_gr == 7 and tcu2_cur_gr == 14:
       gear_str = "R"
+    elif tcu1_cur_gr == 6 and tcu2_cur_gr == 0:
+      gear_str = "N"
+    elif tcu1_cur_gr == 0 and tcu2_cur_gr == 0:
+      gear_str = "P"
     else:
       gear_str = None
     ret.gearShifter = self.parse_gear_shifter(gear_str)
 
-    unsafe_vehicle_state = (not (tcu1_drive and tcu2_drive) or
+    forward_gear = (tcu1_drive or tcu1_sport) and tcu2_forward
+    unsafe_vehicle_state = (not forward_gear or
                              ret.doorOpen or
                              ret.seatbeltUnlatched or
                              ret.parkingBrake)
