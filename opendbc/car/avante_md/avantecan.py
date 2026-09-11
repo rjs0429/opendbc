@@ -41,3 +41,23 @@ def create_vsm1(raw_vsm1: bytes, apply_torque: int, enabled: bool) -> CanData:
   dat[7] = vsm1_checksum(dat)
 
   return CanData(VSM1, bytes(dat), CanBus.EPS)
+
+
+CLU1 = 0x4F0
+CLU1_STALE_NANOS = 60_000_000
+CLU1_SW_NONE = 0
+CLU1_SW_SET = 2
+
+
+def create_clu1(raw_clu1: bytes, sw_state: int, sw_main: int) -> CanData:
+  """Copy the cluster's own CLU1 and flip only the cruise switch bits.
+
+  Speed, odometer, counter and parity are carried over untouched; re-encoding from signals would
+  put a zeroed speed and odometer on the powertrain bus.
+  """
+  dat = bytearray(raw_clu1[:8])
+
+  dat[0] = (dat[0] & ~0x07) | (sw_state & 0x07)
+  dat[3] = (dat[3] & ~0x01) | (sw_main & 0x01)
+
+  return CanData(CLU1, bytes(dat), CanBus.VEHICLE)

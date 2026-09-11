@@ -2,8 +2,8 @@ import time
 
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
-from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
-from opendbc.car.avante_md.values import CanBus, CarControllerParams, DBC
+from opendbc.car.avante_md.avantecan import CLU1, VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
+from opendbc.car.avante_md.values import CanBus, CarControllerParams, CruiseParams, DBC
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 
@@ -80,6 +80,48 @@ class MomentaryButtonDoubleClick:
     return single_click, double_click
 
 
+class EcoLongPress:
+  """ECO switch held long enough to toggle stock cruise.
+
+  While a hold is long enough to count, it is hidden from the lateral-control double-click
+  detector: that detector counts switch edges, so the release edge of a cruise hold would
+  otherwise toggle steering as well.
+  """
+  DEBOUNCE_FRAMES = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
+
+  def __init__(self, hold_nanos: int):
+    self.hold_nanos = hold_nanos
+    self.consumed = False
+    self._level = 0
+    self._raw_btn = 0
+    self._raw_count = 0
+    self._press_nanos: int | None = None
+    self._fired = False
+
+  def update(self, current_btn: int, now_nanos: int) -> bool:
+    current_btn = 1 if current_btn else 0
+
+    if current_btn == self._raw_btn:
+      if self._raw_count < self.DEBOUNCE_FRAMES:
+        self._raw_count += 1
+    else:
+      self._raw_btn = current_btn
+      self._raw_count = 1
+
+    if self._raw_count >= self.DEBOUNCE_FRAMES and current_btn != self._level:
+      self._level = current_btn
+      self._press_nanos = now_nanos if current_btn else None
+      self._fired = False
+
+    long_press = (self._level == 1 and not self._fired and self._press_nanos is not None and
+                  (now_nanos - self._press_nanos) >= self.hold_nanos)
+    if long_press:
+      self._fired = True
+
+    self.consumed = self._fired and self._level == 1
+    return long_press
+
+
 class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
@@ -90,6 +132,8 @@ class CarState(CarStateBase):
     self.vsm1_rx_raw: bytes | None = None
     self.vsm1_rx_nanos = 0
     self.vsm1_normal = False
+    self.clu1_rx_raw: bytes | None = None
+    self.clu1_rx_nanos = 0
     self.can_update_nanos = 0
 
     self.vsm2_fault_count = 0
@@ -103,16 +147,28 @@ class CarState(CarStateBase):
     self.should_be_active = False
 
     self.eco_btn = MomentaryButtonDoubleClick()
+    self.eco_long = EcoLongPress(CruiseParams.HOLD_NANOS)
     self.openpilot_requested = True
 
-  def update_vsm1_raw(self, can_packets):
+    self.cruise_long_press = False
+    self.cruise_lamp_main = False
+    self.cruise_lamp_set = False
+    self.cruise_lamps_valid = False
+    self.cruise_precond = False
+
+  def update_raw_frames(self, can_packets):
     for t, frames in can_packets:
       self.can_update_nanos = max(self.can_update_nanos, t)
       for addr, dat, src in frames:
-        if src == CanBus.VEHICLE and addr == VSM1 and len(dat) == 8:
+        if src != CanBus.VEHICLE or len(dat) != 8:
+          continue
+        if addr == VSM1:
           self.vsm1_rx_raw = bytes(dat)
           self.vsm1_rx_nanos = t
           self.vsm1_normal = vsm1_is_normal_state(self.vsm1_rx_raw)
+        elif addr == CLU1:
+          self.clu1_rx_raw = bytes(dat)
+          self.clu1_rx_nanos = t
 
   def update(self, can_parsers) -> structs.CarState:
     cp_vehicle = can_parsers[Bus.pt]
@@ -229,9 +285,18 @@ class CarState(CarStateBase):
     self.should_be_active = should_be_active
 
     eco_signal = int(cp_vehicle.vl["CLU2"]["CF_Clu_ActiveEcoSW"])
-    _, eco_double_click = self.eco_btn.update(eco_signal)
-    if eco_double_click:
-      self.openpilot_requested = not self.openpilot_requested
+    self.cruise_long_press = self.eco_long.update(eco_signal, self.can_update_nanos)
+    if self.eco_long.consumed:
+      self.eco_btn.reset()
+    else:
+      _, eco_double_click = self.eco_btn.update(eco_signal)
+      if eco_double_click:
+        self.openpilot_requested = not self.openpilot_requested
+
+    self.cruise_lamp_main = cp_vehicle.vl["EMS6"]["CRUISE_LAMP_M"] != 0
+    self.cruise_lamp_set = cp_vehicle.vl["EMS6"]["CRUISE_LAMP_S"] != 0
+    self.cruise_lamps_valid = can_valid
+    self.cruise_precond = can_valid and not unsafe_vehicle_state
 
     effective_active = should_be_active and self.openpilot_requested
     button_events = []
@@ -253,6 +318,7 @@ class CarState(CarStateBase):
       ("TCS5", 50),
       ("CLU1", 50),
       ("CLU2", 10),
+      ("EMS6", 100),
       ("TCU1", 100),
       ("TCU2", 100),
     ]

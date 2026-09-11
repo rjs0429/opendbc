@@ -5,6 +5,7 @@ from collections import defaultdict
 from opendbc.car import Bus, gen_empty_fingerprint, structs
 from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS, vsm1_checksum
 from opendbc.car.avante_md.carstate import AVANTE_FAULT_PERMANENT_FRAMES, CarState, MomentaryButtonDoubleClick
+from opendbc.car.avante_md.values import CruiseParams
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus
 
@@ -65,17 +66,16 @@ class TestAvanteMdCarState(unittest.TestCase):
 
   def _update(self):
     self.nanos += 10_000_000  # 10 ms
-    self.CS.update_vsm1_raw([(self.nanos, [(VSM1, normal_vsm1(), CanBus.VEHICLE)])])
+    self.CS.update_raw_frames([(self.nanos, [(VSM1, normal_vsm1(), CanBus.VEHICLE)])])
     return self.CS.update(self.parsers)
 
   def _update_no_vsm1(self):
     self.nanos += 10_000_000
-    self.CS.update_vsm1_raw([(self.nanos, [])])
+    self.CS.update_raw_frames([(self.nanos, [])])
     return self.CS.update(self.parsers)
 
   def _eco_double_click(self):
     D = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
-    # CF_Clu_ActiveEcoSW is a state toggle, so two stable edges are one double-click.
     for _ in range(D):
       self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
       self._update()
@@ -87,6 +87,46 @@ class TestAvanteMdCarState(unittest.TestCase):
       self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
       ret = self._update()
     return ret
+
+  def _eco_hold(self, nanos):
+    D = MomentaryButtonDoubleClick.DEBOUNCE_FRAMES
+    for _ in range(D):
+      self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+      self._update()
+
+    long_press = False
+    self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 1
+    end = self.nanos + nanos
+    while self.nanos < end:
+      self._update()
+      long_press |= self.CS.cruise_long_press
+
+    self.vehicle["CLU2"]["CF_Clu_ActiveEcoSW"] = 0
+    for _ in range(D + 1):
+      self._update()
+      long_press |= self.CS.cruise_long_press
+    return long_press
+
+  # ── Cruise long press ────────────────────────────────────────────────────────
+
+  def test_cruise_hold_does_not_toggle_lateral_control(self):
+    self._update()
+    self.assertTrue(self.CS.openpilot_requested)
+
+    self.assertTrue(self._eco_hold(CruiseParams.HOLD_NANOS + 5 * 10_000_000))
+    self.assertTrue(self.CS.openpilot_requested)
+
+  def test_short_press_still_toggles_lateral_control_after_a_cruise_hold(self):
+    self._update()
+    self._eco_hold(CruiseParams.HOLD_NANOS + 5 * 10_000_000)
+    self.assertTrue(self.CS.openpilot_requested)
+
+    self._eco_double_click()
+    self.assertFalse(self.CS.openpilot_requested)
+
+  def test_short_press_does_not_request_cruise(self):
+    self._update()
+    self.assertFalse(self._eco_hold(500_000_000))
 
   # ── Interface params ──────────────────────────────────────────────────────────
 

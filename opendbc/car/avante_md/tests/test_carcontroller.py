@@ -2,7 +2,7 @@
 import unittest
 
 from opendbc.car import gen_empty_fingerprint, structs
-from opendbc.car.avante_md.avantecan import VSM1, vsm1_checksum
+from opendbc.car.avante_md.avantecan import CLU1, VSM1, vsm1_checksum
 from opendbc.car.avante_md.carcontroller import AVANTE_CONTROL_READY_STABILIZE_NANOS, CarController
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus, CarControllerParams
@@ -27,8 +27,63 @@ class FakeCarState:
     self.vsm1_rx_nanos = 0
     self.vsm1_normal = True
     self.openpilot_enabled = False
+    self.clu1_rx_raw: bytes | None = None
+    self.clu1_rx_nanos = 0
+    self.cruise_long_press = False
+    self.cruise_lamp_main = False
+    self.cruise_lamp_set = False
+    self.cruise_lamps_valid = False
+    self.cruise_precond = False
     self.out = structs.CarState()
     self.out.vEgo = 31 * CV.KPH_TO_MS
+
+
+GENUINE_CLU1 = bytes([0x00, 0x78, 0x3B, 0x46, 0x5A, 0x11, 0x22, 0x33])
+
+
+class TestAvanteMdCruiseSend(unittest.TestCase):
+  def setUp(self):
+    CP = CarInterface.get_params(CAR.AVANTE_MD_2012, gen_empty_fingerprint(), [], False, False, False)
+    self.controller = CarController({}, CP)
+    self.CC = structs.CarControl.new_message()
+    self.CS = FakeCarState()
+    self.CS.cruise_lamps_valid = True
+    self.CS.cruise_precond = True
+    self.CS.out.vEgoCluster = 60. * CV.KPH_TO_MS
+    self.now = 0
+
+  def _step(self, long_press=False, new_frame=True):
+    self.now += 10_000_000
+    if new_frame:
+      self.CS.clu1_rx_raw = GENUINE_CLU1
+      self.CS.clu1_rx_nanos = self.now
+    self.CS.cruise_long_press = long_press
+    self.CS.vsm1_rx_nanos = self.now
+    _, can_sends = self.controller.update(self.CC.as_reader(), self.CS, self.now)
+    return [m for m in can_sends if m.address == CLU1]
+
+  def test_idle_does_not_touch_clu1(self):
+    for _ in range(10):
+      self.assertEqual([], self._step())
+
+  def test_one_injected_frame_per_genuine_frame(self):
+    self._step()
+    self._step(long_press=True)
+
+    self.assertEqual(1, len(self._step()))
+    self.assertEqual(0, len(self._step(new_frame=False)))
+    self.assertEqual(1, len(self._step()))
+
+  def test_injected_frame_only_flips_cruise_bits(self):
+    self._step()
+    self._step(long_press=True)
+    sent = self._step()[0].dat
+
+    self.assertEqual(1, sent[3] & 0x01)
+    self.assertEqual(GENUINE_CLU1[0] & ~0x07, sent[0] & ~0x07)
+    self.assertEqual(GENUINE_CLU1[3] & ~0x01, sent[3] & ~0x01)
+    self.assertEqual(GENUINE_CLU1[1:3], sent[1:3])
+    self.assertEqual(GENUINE_CLU1[4:], sent[4:])
 
 
 class TestAvanteMdCarController(unittest.TestCase):

@@ -35,5 +35,5 @@ class CarInterface(CarInterfaceBase):
     return ret
 
   def update(self, can_packets):
-    self.CS.update_vsm1_raw(can_packets)
+    self.CS.update_raw_frames(can_packets)
     return super().update(can_packets)

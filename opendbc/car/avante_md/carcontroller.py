@@ -1,7 +1,9 @@
 from opendbc.car.avante_md import avantecan
-from opendbc.car.avante_md.avantecan import VSM1, VSM1_STALE_NANOS
+from opendbc.car.avante_md.avantecan import CLU1_STALE_NANOS, VSM1, VSM1_STALE_NANOS
+from opendbc.car.avante_md.cruise import CruiseStateMachine
 from opendbc.car.avante_md.values import CanBus, CarControllerParams
 from opendbc.car.can_definitions import CanData
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 
@@ -16,6 +18,8 @@ class CarController(CarControllerBase):
     self.control_ready_last = False
     self.control_ready_stable_last = False
     self.control_ready_start_nanos = 0
+    self.cruise = CruiseStateMachine()
+    self.clu1_tx_nanos = 0
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -47,6 +51,14 @@ class CarController(CarControllerBase):
       can_sends.append(avantecan.create_vsm1(CS.vsm1_rx_raw, 0, False))
     elif CS.vsm1_rx_raw is not None:
       can_sends.append(CanData(VSM1, CS.vsm1_rx_raw, CanBus.EPS))
+
+    clu1_fresh = CS.clu1_rx_raw is not None and (now_nanos - CS.clu1_rx_nanos) <= CLU1_STALE_NANOS
+    self.cruise.update(now_nanos, CS.cruise_long_press, CS.cruise_lamps_valid, CS.cruise_lamp_main,
+                       CS.cruise_lamp_set, CS.out.vEgoCluster * CV.MS_TO_KPH, CS.cruise_precond, clu1_fresh)
+    # The controller runs faster than CLU1, so inject exactly one copy per genuine frame.
+    if self.cruise.transmitting and clu1_fresh and CS.clu1_rx_nanos != self.clu1_tx_nanos:
+      self.clu1_tx_nanos = CS.clu1_rx_nanos
+      can_sends.append(avantecan.create_clu1(CS.clu1_rx_raw, self.cruise.sw_state, self.cruise.sw_main))
 
     self.apply_torque_last = apply_torque if control_ready_stable else 0
     self.control_ready_last = control_ready

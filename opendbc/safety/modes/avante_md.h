@@ -24,6 +24,10 @@
 #define AVANTE_MD_STALE_FAST_US     100000U
 #define AVANTE_MD_STALE_10HZ_US     250000U
 #define AVANTE_MD_VSM1_TX_MIN_US    7000U
+#define AVANTE_MD_CLU1_TX_MIN_US    15000U
+#define AVANTE_MD_CLU1_RX_RECENT_US 25000U
+#define AVANTE_MD_CLU1_PRESS_MAX_US 2000000U
+#define AVANTE_MD_CLU1_MUTE_US      1000000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
 #define AVANTE_MD_STABILIZE_US      100000U
 
@@ -34,6 +38,15 @@
 #define AVANTE_MD_TCU2_GEAR_MAX  6U
 #define AVANTE_MD_TCU2_GEAR_R    14U
 #define AVANTE_MD_DRIVER_TORQUE_SIGN (-1)
+
+// ── Cruise switch injection limits ───────────────────────────────────────────
+// Only SET may be sent: without RES the ECM can never be asked to exceed the speed it was set at.
+#define AVANTE_MD_CLU1_SW_MASK   0x07U
+#define AVANTE_MD_CLU1_SW_SET    2U
+#define AVANTE_MD_CLU1_MAIN_MASK 0x01U
+// SET is gated to 35..130 km/h, outside the 40..120 the controller uses (m/s * VEHICLE_SPEED_FACTOR)
+#define AVANTE_MD_SET_MIN_SPEED  9722
+#define AVANTE_MD_SET_MAX_SPEED  36111
 
 // ── Steering torque safety limits (0.01 Nm units) ────────────────────────────
 // max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 2.0 Nm
@@ -76,6 +89,16 @@ static bool avante_md_parking_brake_off    = false;
 static bool     avante_md_vsm1_tx_seen      = false;
 static uint32_t avante_md_vsm1_tx_last_time = 0U;
 static bool     avante_md_steer_req_violation_latched = false;
+
+// ── CLU1 cruise switch TX tracking ───────────────────────────────────────────
+static uint8_t  avante_md_clu1_last[8]        = {0};
+static bool     avante_md_clu1_last_valid     = false;
+static bool     avante_md_clu1_tx_seen        = false;
+static uint32_t avante_md_clu1_tx_last_time   = 0U;
+static bool     avante_md_clu1_pressing       = false;
+static uint32_t avante_md_clu1_press_start    = 0U;
+static bool     avante_md_clu1_muted          = false;
+static uint32_t avante_md_clu1_mute_start     = 0U;
 
 // ── TX-block stabilization tracking ──────────────────────────────────────────
 static bool     avante_md_block_seen      = false;
@@ -427,6 +450,92 @@ static bool avante_md_vsm1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
          avante_md_vsm1_tx_torque_valid(msg);
 }
 
+// ── TX CLU1 cruise switch checks ─────────────────────────────────────────────
+
+// Every byte outside the cruise switch bits must equal the cluster's own last frame, so speed,
+// odometer, counter and parity can never be forged.
+static bool avante_md_clu1_tx_is_copy(const CANPacket_t *msg) {
+  static const uint8_t AVANTE_MD_CLU1_COPIED[6] = {1U, 2U, 4U, 5U, 6U, 7U};
+
+  bool match = ((msg->data[0] & 0xF8U) == (avante_md_clu1_last[0] & 0xF8U)) &&
+               ((msg->data[3] & 0xFEU) == (avante_md_clu1_last[3] & 0xFEU));
+  for (uint8_t i = 0U; i < 6U; i++) {
+    if (msg->data[AVANTE_MD_CLU1_COPIED[i]] != avante_md_clu1_last[AVANTE_MD_CLU1_COPIED[i]]) {
+      match = false;
+    }
+  }
+  return match;
+}
+
+// Vehicle conditions required to press SET. The MAIN bit is deliberately not gated: MAIN alone
+// cannot move the car, and it must stay possible to switch cruise off at any speed or gear.
+static bool avante_md_cruise_vehicle_ok(uint32_t now) {
+  return !avante_md_rx_state_stale(&avante_md_tcs5_state, now, AVANTE_MD_STALE_FAST_US) &&
+         !avante_md_rx_state_stale(&avante_md_tcu1_state, now, AVANTE_MD_STALE_FAST_US) &&
+         !avante_md_rx_state_stale(&avante_md_tcu2_state, now, AVANTE_MD_STALE_FAST_US) &&
+         !avante_md_rx_state_stale(&avante_md_clu2_state, now, AVANTE_MD_STALE_10HZ_US) &&
+         avante_md_tcu1_drive       &&
+         avante_md_tcu2_drive       &&
+         avante_md_doors_closed     &&
+         avante_md_seatbelt_latched &&
+         avante_md_parking_brake_off;
+}
+
+// Bounds how long a button can be held, then forces a release window.
+static bool avante_md_clu1_press_gate(uint32_t now, bool pressed) {
+  bool allowed = true;
+
+  if (avante_md_clu1_muted &&
+      (safety_get_ts_elapsed(now, avante_md_clu1_mute_start) >= AVANTE_MD_CLU1_MUTE_US)) {
+    avante_md_clu1_muted = false;
+  }
+
+  if (!pressed) {
+    avante_md_clu1_pressing = false;
+  } else if (avante_md_clu1_muted) {
+    allowed = false;
+  } else if (!avante_md_clu1_pressing) {
+    avante_md_clu1_pressing    = true;
+    avante_md_clu1_press_start = now;
+  } else if (safety_get_ts_elapsed(now, avante_md_clu1_press_start) >= AVANTE_MD_CLU1_PRESS_MAX_US) {
+    avante_md_clu1_muted     = true;
+    avante_md_clu1_mute_start = now;
+    avante_md_clu1_pressing  = false;
+    allowed = false;
+  } else {
+    // press still within its budget
+  }
+
+  return allowed;
+}
+
+static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
+  uint8_t sw_state = msg->data[0] & AVANTE_MD_CLU1_SW_MASK;
+  bool    sw_main  = (msg->data[3] & AVANTE_MD_CLU1_MAIN_MASK) != 0U;
+
+  bool valid = avante_md_clu1_last_valid &&
+               !avante_md_rx_state_stale(&avante_md_clu1_state, now, AVANTE_MD_CLU1_RX_RECENT_US) &&
+               avante_md_clu1_tx_is_copy(msg) &&
+               ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_SET));
+
+  if (valid && (sw_state != 0U)) {
+    valid = (vehicle_speed.min >= AVANTE_MD_SET_MIN_SPEED) &&
+            (vehicle_speed.max <= AVANTE_MD_SET_MAX_SPEED) &&
+            avante_md_cruise_vehicle_ok(now);
+  }
+
+  if (valid && avante_md_clu1_tx_seen &&
+      (safety_get_ts_elapsed(now, avante_md_clu1_tx_last_time) < AVANTE_MD_CLU1_TX_MIN_US)) {
+    valid = false;
+  }
+
+  if (valid) {
+    valid = avante_md_clu1_press_gate(now, (sw_state != 0U) || sw_main);
+  }
+
+  return valid;
+}
+
 // ── Speed update from TCS5 ────────────────────────────────────────────────────
 
 static void avante_md_update_speed_from_tcs5(const CANPacket_t *msg) {
@@ -473,6 +582,10 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == AVANTE_MD_CLU1) {
       avante_md_update_rx_state(&avante_md_clu1_state, now);
       avante_md_parking_brake_off = avante_md_clu1_parking_brake_off(msg);
+      for (uint8_t i = 0U; i < 8U; i++) {
+        avante_md_clu1_last[i] = msg->data[i];
+      }
+      avante_md_clu1_last_valid = true;
     }
 
     if (msg->addr == AVANTE_MD_CLU2) {
@@ -534,6 +647,18 @@ static bool avante_md_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  if ((msg->addr == AVANTE_MD_CLU1) &&
+      (msg->bus  == (unsigned char)AVANTE_MD_VEHICLE_BUS)) {
+    uint32_t now = microsecond_timer_get();
+
+    tx = avante_md_clu1_tx_msg_valid(msg, now);
+
+    if (tx) {
+      avante_md_clu1_tx_seen      = true;
+      avante_md_clu1_tx_last_time = now;
+    }
+  }
+
   return tx;
 }
 
@@ -592,6 +717,16 @@ static void avante_md_reset_state(void) {
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
+  for (uint8_t i = 0U; i < 8U; i++) {
+    avante_md_clu1_last[i] = 0U;
+  }
+  avante_md_clu1_last_valid   = false;
+  avante_md_clu1_tx_seen      = false;
+  avante_md_clu1_tx_last_time = 0U;
+  avante_md_clu1_pressing     = false;
+  avante_md_clu1_press_start  = 0U;
+  avante_md_clu1_muted        = false;
+  avante_md_clu1_mute_start   = 0U;
   avante_md_steer_req_violation_latched = false;
 
   avante_md_block_seen      = false;
@@ -601,6 +736,8 @@ static void avante_md_reset_state(void) {
 static safety_config avante_md_init(uint16_t param) {
   static const CanMsg AVANTE_MD_TX_MSGS[] = {
     {AVANTE_MD_VSM1, AVANTE_MD_EPS_BUS, 8,
+     .check_relay = false, .disable_static_blocking = true},
+    {AVANTE_MD_CLU1, AVANTE_MD_VEHICLE_BUS, 8,
      .check_relay = false, .disable_static_blocking = true},
   };
 

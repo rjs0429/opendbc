@@ -16,6 +16,29 @@ class CanBus:
 AVANTE_MD_DBC = "hyundai_avante_2012"
 
 
+class CruiseParams:
+  """Stock cruise control driven by ECO switch long press.
+
+  Button semantics measured on the car: CruiseSwMain 0->1 is a latch toggle, SwState 2 is SET,
+  and holding SET after engagement is a deceleration request, so every press is lamp-closed-loop
+  with a hard cap.
+  """
+  # ECO switch hold that toggles cruise. Must exceed MomentaryButtonDoubleClick.DOUBLE_CLICK_INTERVAL
+  # so a cruise hold can never also read as the lateral-control double click.
+  HOLD_NANOS = 3_100_000_000
+
+  MAIN_PRESS_MAX_NANOS = 1_500_000_000
+  SET_PRESS_MAX_NANOS = 400_000_000
+  SETTLE_NANOS = 600_000_000
+  GAP_NANOS = 300_000_000
+  MAX_PRESS_ATTEMPTS = 3
+
+  SET_SPEED_MIN_KPH = 40.
+  SET_SPEED_MAX_KPH = 120.
+  SET_READY_DWELL_NANOS = 200_000_000
+  SET_READY_TIMEOUT_NANOS = 60_000_000_000
+
+
 class CarControllerParams:
   # VSM1 command safety allows up to 8.0 Nm; controller is capped at 8.0 Nm (STEER_MAX=800).
   STEER_COMMAND_SIGN = 1  # VSM1 command torque is left-positive.

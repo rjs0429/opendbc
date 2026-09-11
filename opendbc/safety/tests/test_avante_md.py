@@ -8,7 +8,7 @@ import opendbc.safety.tests.common as common
 
 
 class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
-  TX_MSGS = [[0x164, 2]]
+  TX_MSGS = [[0x164, 2], [0x4F0, 0]]
   STANDSTILL_THRESHOLD = 0.1
   RELAY_MALFUNCTION_ADDRS = {}
   FWD_BLACKLISTED_ADDRS = {2: [0x164]}
@@ -239,6 +239,118 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def _speed_msg_2(self, speed):
     return None
+
+  # ── CLU1 cruise switch TX helpers ─────────────────────────────────────────
+
+  def _clu1_payload(self, parking_brake=False):
+    """Genuine CLU1 payload with non-trivial speed/odometer bytes to catch forgery."""
+    cnt = self._clu1_cnt
+    self._clu1_cnt = (self._clu1_cnt + 1) % 128
+    dat = bytearray(8)
+    dat[0] = 0x80 if parking_brake else 0x00
+    dat[1] = 0x78
+    dat[2] = ((cnt & 0x7F) << 1) | 0x01
+    dat[3] = 0x46
+    dat[4] = 0x5A
+    dat[5] = 0x11
+    dat[6] = 0x22
+    dat[7] = 0x33
+    return bytearray(dat)
+
+  def _cruise_rx(self, speed_ms=16.7, gear_drive=True, door_open=False, seatbelt_unlatched=False,
+                 dt_us=20_000):
+    """Advance time, refresh the messages the cruise gate reads, return the genuine CLU1."""
+    self._refresh_prereqs_on_tx = False
+    self._auto_tx_time_us += dt_us
+    self.safety.set_timer(self._auto_tx_time_us)
+
+    for _ in range(6):
+      self.safety.safety_rx_hook(self._tcs5_msg(speed_kph=speed_ms))
+    self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=5 if gear_drive else 0))
+    self.safety.safety_rx_hook(self._tcu2_msg(gear=1 if gear_drive else 0))
+    self.safety.safety_rx_hook(self._clu2_msg(door_open=door_open, seatbelt_unlatched=seatbelt_unlatched))
+
+    payload = self._clu1_payload()
+    self.safety.safety_rx_hook(common.make_msg(0, 0x4F0, 8, bytes(payload)))
+    return payload
+
+  @staticmethod
+  def _clu1_tx_msg(payload, sw_state=0, sw_main=0):
+    dat = bytearray(payload)
+    dat[0] = (dat[0] & ~0x07) | (sw_state & 0x07)
+    dat[3] = (dat[3] & ~0x01) | (sw_main & 0x01)
+    return common.make_msg(0, 0x4F0, 8, bytes(dat))
+
+  def _cruise_tx(self, sw_state=0, sw_main=0, **kwargs):
+    payload = self._cruise_rx(**kwargs)
+    return self._tx(self._clu1_tx_msg(payload, sw_state, sw_main))
+
+  # ── CLU1 cruise switch TX ─────────────────────────────────────────────────
+
+  def test_cruise_set_press_allowed(self):
+    self.assertTrue(self._cruise_tx(sw_state=2))
+
+  def test_cruise_main_press_allowed(self):
+    self.assertTrue(self._cruise_tx(sw_main=1))
+
+  def test_cruise_rejects_forged_payload(self):
+    for byte in (1, 2, 4, 5, 6, 7):
+      with self.subTest(byte=byte):
+        payload = self._cruise_rx()
+        forged = bytearray(payload)
+        forged[byte] ^= 0xFF
+        self.assertFalse(self._tx(self._clu1_tx_msg(forged, sw_state=2)))
+
+  def test_cruise_rejects_forged_byte0_and_byte3_bits(self):
+    for byte, mask in ((0, 0xF8), (3, 0xFE)):
+      with self.subTest(byte=byte):
+        payload = self._cruise_rx()
+        forged = bytearray(payload)
+        forged[byte] ^= mask
+        self.assertFalse(self._tx(self._clu1_tx_msg(forged, sw_state=2)))
+
+  def test_cruise_rejects_every_button_but_set(self):
+    for sw_state in (1, 3, 4, 5, 6, 7):
+      with self.subTest(sw_state=sw_state):
+        self.assertFalse(self._cruise_tx(sw_state=sw_state))
+
+  def test_cruise_set_blocked_outside_speed_range(self):
+    for speed_ms in (9.0, 37.0):
+      with self.subTest(speed_ms=speed_ms):
+        self.assertFalse(self._cruise_tx(sw_state=2, speed_ms=speed_ms))
+
+  def test_cruise_set_blocked_out_of_drive(self):
+    self.assertFalse(self._cruise_tx(sw_state=2, gear_drive=False))
+
+  def test_cruise_set_blocked_with_door_open(self):
+    self.assertFalse(self._cruise_tx(sw_state=2, door_open=True))
+
+  def test_cruise_main_allowed_stopped_and_out_of_drive(self):
+    self.assertTrue(self._cruise_tx(sw_main=1, speed_ms=0.0, gear_drive=False))
+
+  def test_cruise_blocked_when_cluster_frame_is_stale(self):
+    payload = self._cruise_rx()
+    self._auto_tx_time_us += 30_000
+    self.safety.set_timer(self._auto_tx_time_us)
+    self.assertFalse(self._tx(self._clu1_tx_msg(payload, sw_state=2)))
+
+  def test_cruise_rate_limited(self):
+    self.assertTrue(self._cruise_tx(sw_state=2))
+    self.assertFalse(self._cruise_tx(sw_state=2, dt_us=10_000))
+    self.assertTrue(self._cruise_tx(sw_state=2, dt_us=20_000))
+
+  def test_cruise_press_duration_is_capped_then_muted(self):
+    for _ in range(100):  # 2 s at 20 ms
+      self._cruise_tx(sw_state=2)
+    self.assertFalse(self._cruise_tx(sw_state=2))
+
+    # released frames stay allowed, but pressing again waits out the mute
+    self.assertTrue(self._cruise_tx())
+    self.assertFalse(self._cruise_tx(sw_state=2))
+
+    for _ in range(50):  # 1 s mute
+      self._cruise_tx()
+    self.assertTrue(self._cruise_tx(sw_state=2))
 
   # ── Common base-class overrides (features not in this safety model) ───────
 
