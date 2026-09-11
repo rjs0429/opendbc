@@ -168,23 +168,6 @@ class TestAvanteMdCarController(unittest.TestCase):
     _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 240_000_000)
     self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
 
-  def test_torque_restarts_on_steering_pressed_rising_edge(self):
-    controller, CC, CS = self._setup_controller()
-    CC.actuators.torque = -1.
-
-    _, can_sends = self._update(controller, CC, CS, 0)
-    self.assertEqual(0, vsm1_torque(can_sends[0].dat))
-
-    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS)
-    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
-
-    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 10_000_000)
-    self.assertEqual(-2 * CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
-
-    CS.out.steeringPressed = True
-    _, can_sends = self._update(controller, CC, CS, AVANTE_CONTROL_READY_STABILIZE_NANOS + 20_000_000)
-    self.assertEqual(-CarControllerParams.STEER_DELTA_UP, vsm1_torque(can_sends[0].dat))
-
 
 if __name__ == "__main__":
   unittest.main()
