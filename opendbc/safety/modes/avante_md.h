@@ -28,6 +28,7 @@
 #define AVANTE_MD_CLU1_RX_RECENT_US 25000U
 #define AVANTE_MD_CLU1_PRESS_MAX_US 2000000U
 #define AVANTE_MD_CLU1_MUTE_US      1000000U
+#define AVANTE_MD_CLU1_RELEASE_US   100000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
 #define AVANTE_MD_STABILIZE_US      100000U
 
@@ -495,6 +496,12 @@ static bool avante_md_cruise_vehicle_ok(uint32_t now) {
 // Bounds how long a button can be held, then forces a release window.
 static bool avante_md_clu1_press_gate(uint32_t now, bool pressed) {
   bool allowed = true;
+
+  // A button is released by openpilot going quiet, so a gap in accepted TX ends the press.
+  if (avante_md_clu1_pressing && avante_md_clu1_tx_seen &&
+      (safety_get_ts_elapsed(now, avante_md_clu1_tx_last_time) >= AVANTE_MD_CLU1_RELEASE_US)) {
+    avante_md_clu1_pressing = false;
+  }
 
   if (avante_md_clu1_muted &&
       (safety_get_ts_elapsed(now, avante_md_clu1_mute_start) >= AVANTE_MD_CLU1_MUTE_US)) {

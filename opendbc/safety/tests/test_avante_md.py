@@ -351,6 +351,15 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.assertFalse(self._cruise_tx(sw_state=2, dt_us=10_000))
     self.assertTrue(self._cruise_tx(sw_state=2, dt_us=20_000))
 
+  def test_cruise_taps_separated_by_a_release_all_pass(self):
+    # A tap is released by going quiet; the next tap must not inherit the previous one's budget.
+    for tap in range(6):
+      with self.subTest(tap=tap):
+        for _ in range(20):  # 0.4 s of pressing
+          self.assertTrue(self._cruise_tx(sw_state=2))
+        for _ in range(30):  # 0.6 s quiet
+          self._cruise_rx()
+
   def test_cruise_press_duration_is_capped_then_muted(self):
     for _ in range(100):  # 2 s at 20 ms
       self._cruise_tx(sw_state=2)
