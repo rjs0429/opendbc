@@ -66,12 +66,12 @@ class TestAvanteMdCruiseSend(unittest.TestCase):
     for _ in range(10):
       self.assertEqual([], self._step())
 
-  def test_one_injected_frame_per_genuine_frame(self):
+  def test_pressing_injects_every_cycle(self):
     self._step()
     self._step(long_press=True)
 
     self.assertEqual(1, len(self._step()))
-    self.assertEqual(0, len(self._step(new_frame=False)))
+    self.assertEqual(1, len(self._step(new_frame=False)))
     self.assertEqual(1, len(self._step()))
 
   def test_injected_frame_only_flips_cruise_bits(self):

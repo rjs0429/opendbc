@@ -28,14 +28,17 @@ class CruiseParams:
   HOLD_NANOS = 3_100_000_000
 
   # Every press is a tap that is released as soon as its lamp answers, then a settle window before
-  # the next attempt. MAIN settles longest: it is an edge toggle, so tapping again while the lamp is
-  # merely slow (up to 0.8 s measured) would toggle it straight back off.
-  MAIN_PRESS_NANOS = 400_000_000
+  # the next attempt. MAIN settles longest: it is an edge toggle, so tapping again while its lamp is
+  # still catching up would toggle it straight back off. Presses are long because the cluster keeps
+  # sending its own released frame between ours, so the ECM only samples the button pressed part of
+  # the time.
+  MAIN_PRESS_NANOS = 1_500_000_000
   MAIN_SETTLE_NANOS = 1_000_000_000
-  SET_PRESS_NANOS = 400_000_000
+  # SET stays shorter: holding it once cruise engages is a deceleration request.
+  SET_PRESS_NANOS = 800_000_000
   SET_SETTLE_NANOS = 600_000_000
   GAP_NANOS = 300_000_000
-  MAX_PRESS_ATTEMPTS = 5
+  MAX_PRESS_ATTEMPTS = 6
 
   SET_SPEED_MIN_KPH = 40.
   SET_SPEED_MAX_KPH = 120.

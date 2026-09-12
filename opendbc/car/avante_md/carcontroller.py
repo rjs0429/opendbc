@@ -19,7 +19,6 @@ class CarController(CarControllerBase):
     self.control_ready_stable_last = False
     self.control_ready_start_nanos = 0
     self.cruise = CruiseStateMachine()
-    self.clu1_tx_nanos = 0
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -55,9 +54,9 @@ class CarController(CarControllerBase):
     clu1_fresh = CS.clu1_rx_raw is not None and (now_nanos - CS.clu1_rx_nanos) <= CLU1_STALE_NANOS
     self.cruise.update(now_nanos, CS.cruise_long_press, CS.cruise_lamps_valid, CS.cruise_lamp_main,
                        CS.cruise_lamp_set, CS.out.vEgoCluster * CV.MS_TO_KPH, CS.cruise_precond, clu1_fresh)
-    # The controller runs faster than CLU1, so inject exactly one copy per genuine frame.
-    if self.cruise.transmitting and clu1_fresh and CS.clu1_rx_nanos != self.clu1_tx_nanos:
-      self.clu1_tx_nanos = CS.clu1_rx_nanos
+    # The cluster's own released frame lands between ours, so a press is sent every cycle rather
+    # than once per cluster frame.
+    if self.cruise.transmitting and clu1_fresh:
       can_sends.append(avantecan.create_clu1(CS.clu1_rx_raw, self.cruise.sw_state, self.cruise.sw_main))
 
     self.apply_torque_last = apply_torque if control_ready_stable else 0

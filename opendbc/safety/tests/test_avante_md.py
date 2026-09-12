@@ -348,8 +348,8 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
 
   def test_cruise_rate_limited(self):
     self.assertTrue(self._cruise_tx(sw_state=2))
-    self.assertFalse(self._cruise_tx(sw_state=2, dt_us=10_000))
-    self.assertTrue(self._cruise_tx(sw_state=2, dt_us=20_000))
+    self.assertFalse(self._cruise_tx(sw_state=2, dt_us=5_000))
+    self.assertTrue(self._cruise_tx(sw_state=2, dt_us=10_000))
 
   def test_cruise_taps_separated_by_a_release_all_pass(self):
     # A tap is released by going quiet; the next tap must not inherit the previous one's budget.
