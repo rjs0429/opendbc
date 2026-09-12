@@ -91,8 +91,12 @@ static uint32_t avante_md_vsm1_tx_last_time = 0U;
 static bool     avante_md_steer_req_violation_latched = false;
 
 // ── CLU1 cruise switch TX tracking ───────────────────────────────────────────
-static uint8_t  avante_md_clu1_last[8]        = {0};
-static bool     avante_md_clu1_last_valid     = false;
+// openpilot copies a CLU1 it received, and by the time that copy comes back the cluster has sent
+// newer frames, so a TX is matched against a short history rather than the newest frame alone.
+#define AVANTE_MD_CLU1_HISTORY 8U
+static uint8_t  avante_md_clu1_hist[AVANTE_MD_CLU1_HISTORY][8];
+static uint8_t  avante_md_clu1_hist_len       = 0U;
+static uint8_t  avante_md_clu1_hist_idx       = 0U;
 static bool     avante_md_clu1_tx_seen        = false;
 static uint32_t avante_md_clu1_tx_last_time   = 0U;
 static bool     avante_md_clu1_pressing       = false;
@@ -452,19 +456,26 @@ static bool avante_md_vsm1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
 
 // ── TX CLU1 cruise switch checks ─────────────────────────────────────────────
 
-// Every byte outside the cruise switch bits must equal the cluster's own last frame, so speed,
-// odometer, counter and parity can never be forged.
+// Every byte outside the cruise switch bits must equal one of the cluster's recent frames, so
+// speed, odometer, counter and parity can never be forged.
 static bool avante_md_clu1_tx_is_copy(const CANPacket_t *msg) {
   static const uint8_t AVANTE_MD_CLU1_COPIED[6] = {1U, 2U, 4U, 5U, 6U, 7U};
+  bool copy = false;
 
-  bool match = ((msg->data[0] & 0xF8U) == (avante_md_clu1_last[0] & 0xF8U)) &&
-               ((msg->data[3] & 0xFEU) == (avante_md_clu1_last[3] & 0xFEU));
-  for (uint8_t i = 0U; i < 6U; i++) {
-    if (msg->data[AVANTE_MD_CLU1_COPIED[i]] != avante_md_clu1_last[AVANTE_MD_CLU1_COPIED[i]]) {
-      match = false;
+  for (uint8_t h = 0U; h < avante_md_clu1_hist_len; h++) {
+    const uint8_t *genuine = avante_md_clu1_hist[h];
+    bool match = ((msg->data[0] & 0xF8U) == (genuine[0] & 0xF8U)) &&
+                 ((msg->data[3] & 0xFEU) == (genuine[3] & 0xFEU));
+    for (uint8_t i = 0U; i < 6U; i++) {
+      if (msg->data[AVANTE_MD_CLU1_COPIED[i]] != genuine[AVANTE_MD_CLU1_COPIED[i]]) {
+        match = false;
+      }
+    }
+    if (match) {
+      copy = true;
     }
   }
-  return match;
+  return copy;
 }
 
 // Vehicle conditions required to press SET. The MAIN bit is deliberately not gated: MAIN alone
@@ -513,7 +524,7 @@ static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
   uint8_t sw_state = msg->data[0] & AVANTE_MD_CLU1_SW_MASK;
   bool    sw_main  = (msg->data[3] & AVANTE_MD_CLU1_MAIN_MASK) != 0U;
 
-  bool valid = avante_md_clu1_last_valid &&
+  bool valid = (avante_md_clu1_hist_len > 0U) &&
                !avante_md_rx_state_stale(&avante_md_clu1_state, now, AVANTE_MD_CLU1_RX_RECENT_US) &&
                avante_md_clu1_tx_is_copy(msg) &&
                ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_SET));
@@ -583,9 +594,12 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
       avante_md_update_rx_state(&avante_md_clu1_state, now);
       avante_md_parking_brake_off = avante_md_clu1_parking_brake_off(msg);
       for (uint8_t i = 0U; i < 8U; i++) {
-        avante_md_clu1_last[i] = msg->data[i];
+        avante_md_clu1_hist[avante_md_clu1_hist_idx][i] = msg->data[i];
       }
-      avante_md_clu1_last_valid = true;
+      avante_md_clu1_hist_idx = (avante_md_clu1_hist_idx + 1U) % AVANTE_MD_CLU1_HISTORY;
+      if (avante_md_clu1_hist_len < AVANTE_MD_CLU1_HISTORY) {
+        avante_md_clu1_hist_len++;
+      }
     }
 
     if (msg->addr == AVANTE_MD_CLU2) {
@@ -717,10 +731,13 @@ static void avante_md_reset_state(void) {
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
-  for (uint8_t i = 0U; i < 8U; i++) {
-    avante_md_clu1_last[i] = 0U;
+  for (uint8_t i = 0U; i < AVANTE_MD_CLU1_HISTORY; i++) {
+    for (uint8_t j = 0U; j < 8U; j++) {
+      avante_md_clu1_hist[i][j] = 0U;
+    }
   }
-  avante_md_clu1_last_valid   = false;
+  avante_md_clu1_hist_len     = 0U;
+  avante_md_clu1_hist_idx     = 0U;
   avante_md_clu1_tx_seen      = false;
   avante_md_clu1_tx_last_time = 0U;
   avante_md_clu1_pressing     = false;

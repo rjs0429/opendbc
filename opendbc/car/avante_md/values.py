@@ -27,9 +27,13 @@ class CruiseParams:
   # so a cruise hold can never also read as the lateral-control double click.
   HOLD_NANOS = 3_100_000_000
 
-  MAIN_PRESS_MAX_NANOS = 1_500_000_000
-  SET_PRESS_MAX_NANOS = 400_000_000
-  SETTLE_NANOS = 600_000_000
+  # Every press is a tap that is released as soon as its lamp answers, then a settle window before
+  # the next attempt. MAIN settles longest: it is an edge toggle, so tapping again while the lamp is
+  # merely slow (up to 0.8 s measured) would toggle it straight back off.
+  MAIN_PRESS_NANOS = 400_000_000
+  MAIN_SETTLE_NANOS = 1_000_000_000
+  SET_PRESS_NANOS = 400_000_000
+  SET_SETTLE_NANOS = 600_000_000
   GAP_NANOS = 300_000_000
   MAX_PRESS_ATTEMPTS = 3
 

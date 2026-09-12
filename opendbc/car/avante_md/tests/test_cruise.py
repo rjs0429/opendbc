@@ -8,6 +8,8 @@ from opendbc.car.avante_md.values import CanBus, CruiseParams
 
 FRAME = 10_000_000
 LAMP_LATENCY = 100_000_000
+MAIN_FAULT_BUDGET = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.MAIN_PRESS_NANOS +
+                                                       CruiseParams.MAIN_SETTLE_NANOS + 2 * FRAME)
 
 
 class FakeEcm:
@@ -217,7 +219,7 @@ class TestCruiseStateMachine(unittest.TestCase):
     sim = Sim(FakeEcm(main_responds=False))
     sim.run(FRAME)
     sim.step(long_press=True)
-    budget = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.MAIN_PRESS_MAX_NANOS + CruiseParams.GAP_NANOS)
+    budget = MAIN_FAULT_BUDGET
     self.assertEqual(CruiseState.FAULT, sim.run(budget + FRAME))
     self.assertFalse(sim.sm.transmitting)
 
@@ -225,7 +227,7 @@ class TestCruiseStateMachine(unittest.TestCase):
     sim = Sim(FakeEcm(set_responds=False))
     sim.run(FRAME)
     sim.step(long_press=True)
-    budget = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.SET_PRESS_MAX_NANOS + CruiseParams.SETTLE_NANOS +
+    budget = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.SET_PRESS_NANOS + CruiseParams.SET_SETTLE_NANOS +
                                                 CruiseParams.GAP_NANOS + CruiseParams.SET_READY_DWELL_NANOS)
     self.assertEqual(CruiseState.FAULT, sim.run(budget + 5 * LAMP_LATENCY))
 
@@ -233,7 +235,7 @@ class TestCruiseStateMachine(unittest.TestCase):
     sim = Sim(FakeEcm(main_responds=False))
     sim.run(FRAME)
     sim.step(long_press=True)
-    budget = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.MAIN_PRESS_MAX_NANOS + CruiseParams.GAP_NANOS)
+    budget = MAIN_FAULT_BUDGET
     self.assertEqual(CruiseState.FAULT, sim.run(budget + FRAME))
 
     sim.ecm.main_responds = True
@@ -243,7 +245,7 @@ class TestCruiseStateMachine(unittest.TestCase):
     sim = Sim(FakeEcm(main_responds=False))
     sim.run(FRAME)
     sim.step(long_press=True)
-    budget = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.MAIN_PRESS_MAX_NANOS + CruiseParams.GAP_NANOS)
+    budget = MAIN_FAULT_BUDGET
     sim.run(budget + FRAME)
 
     sim.lamps_valid = False
@@ -270,6 +272,27 @@ class TestCruiseStateMachine(unittest.TestCase):
     sim.clu1_fresh = False
     sim.step()
     self.assertFalse(sim.sm.transmitting)
+
+  def test_main_press_is_released_between_attempts(self):
+    sim = Sim(FakeEcm(main_responds=False))
+    sim.run(FRAME)
+    sim.step(long_press=True)
+
+    pressed = []
+    for _ in range(int((CruiseParams.MAIN_PRESS_NANOS + CruiseParams.MAIN_SETTLE_NANOS) / FRAME) + 2):
+      sim.step()
+      pressed.append(sim.sm.sw_main)
+    self.assertIn(1, pressed)
+    self.assertIn(0, pressed[-5:])
+
+  def test_main_press_released_as_soon_as_the_lamp_answers(self):
+    sim = Sim()
+    sim.run(FRAME)
+    sim.step(long_press=True)
+    while sim.sm.state == CruiseState.PRESS_MAIN_ON:
+      sim.step()
+    self.assertEqual(0, sim.sm.sw_main)
+    self.assertLess(sim.now, CruiseParams.MAIN_PRESS_NANOS + CruiseParams.MAIN_SETTLE_NANOS)
 
   def test_long_press_is_ignored_while_a_press_is_running(self):
     sim = Sim(FakeEcm(main_responds=False))

@@ -30,7 +30,6 @@ class CruiseStateMachine:
     self.sw_main = 0
     self._entered = 0
     self._press_start = 0
-    self._retry_at = 0
     self._settle_until: int | None = None
     self._pressing = False
     self._main_attempts = 0
@@ -51,54 +50,30 @@ class CruiseStateMachine:
     self.sw_main = 0
     self._entered = now
     self._press_start = now
-    self._retry_at = now
     self._settle_until = None
     self._pressing = False
     self._ready_since = None
 
-  def _press_main(self, now: int, lamp_main: bool, target_on: bool) -> bool | None:
-    if lamp_main == target_on:
-      self.sw_main = 0
-      return True
+  def _tap(self, now: int, reached: bool, press_nanos: int, settle_nanos: int) -> bool | None:
+    """Hold the button until its lamp answers, then release; None while an attempt is still open."""
+    done: bool | None = None
 
-    if self._pressing:
-      self.sw_main = 1
-      if now - self._press_start >= CruiseParams.MAIN_PRESS_MAX_NANOS:
-        self.sw_main = 0
+    if reached:
+      self._pressing = False
+      self._settle_until = None
+      done = True
+    elif self._pressing:
+      if now - self._press_start >= press_nanos:
         self._pressing = False
-        self._main_attempts += 1
-        self._retry_at = now + CruiseParams.GAP_NANOS
-    else:
-      self.sw_main = 0
-      if self._main_attempts >= CruiseParams.MAX_PRESS_ATTEMPTS:
-        return False
-      if now >= self._retry_at:
-        self.sw_main = 1
-        self._pressing = True
-        self._press_start = now
-    return None
+        self._settle_until = now + settle_nanos
+    elif self._settle_until is None:
+      self._pressing = True
+      self._press_start = now
+    elif now >= self._settle_until:
+      self._settle_until = None
+      done = False
 
-  def _press_set(self, now: int, lamp_set: bool) -> bool | None:
-    if lamp_set:
-      self.sw_state = CLU1_SW_NONE
-      return True
-
-    if self._pressing:
-      self.sw_state = CLU1_SW_SET
-      if now - self._press_start >= CruiseParams.SET_PRESS_MAX_NANOS:
-        self.sw_state = CLU1_SW_NONE
-        self._pressing = False
-        self._set_attempts += 1
-        self._settle_until = now + CruiseParams.SETTLE_NANOS
-    else:
-      self.sw_state = CLU1_SW_NONE
-      if self._settle_until is None:
-        self.sw_state = CLU1_SW_SET
-        self._pressing = True
-        self._press_start = now
-      elif now >= self._settle_until:
-        return False
-    return None
+    return done
 
   def update(self, now: int, long_press: bool, lamps_valid: bool, lamp_main: bool, lamp_set: bool,
              v_cluster_kph: float, precond: bool, clu1_fresh: bool) -> None:
@@ -121,11 +96,14 @@ class CruiseStateMachine:
         self._set_attempts = 0
 
     elif self.state == CruiseState.PRESS_MAIN_ON:
-      done = self._press_main(now, lamp_main, target_on=True)
+      done = self._tap(now, lamp_main, CruiseParams.MAIN_PRESS_NANOS, CruiseParams.MAIN_SETTLE_NANOS)
+      self.sw_main = 1 if self._pressing else 0
       if done is True:
         self._goto(CruiseState.WAIT_SET_READY, now)
       elif done is False:
-        self._goto(CruiseState.FAULT, now)
+        self._main_attempts += 1
+        if self._main_attempts >= CruiseParams.MAX_PRESS_ATTEMPTS:
+          self._goto(CruiseState.FAULT, now)
 
     elif self.state == CruiseState.WAIT_SET_READY:
       if long_press or now - self._entered >= CruiseParams.SET_READY_TIMEOUT_NANOS:
@@ -145,12 +123,14 @@ class CruiseStateMachine:
         self._ready_since = None
 
     elif self.state == CruiseState.PRESS_SET:
-      done = self._press_set(now, lamp_set)
+      done = self._tap(now, lamp_set, CruiseParams.SET_PRESS_NANOS, CruiseParams.SET_SETTLE_NANOS)
+      self.sw_state = CLU1_SW_SET if self._pressing else CLU1_SW_NONE
       if not lamp_main:
         self._goto(CruiseState.IDLE, now)
       elif done is True:
         self._goto(CruiseState.ACTIVE, now)
       elif done is False:
+        self._set_attempts += 1
         if self._set_attempts >= CruiseParams.MAX_PRESS_ATTEMPTS:
           self._goto(CruiseState.FAULT, now)
         else:
@@ -162,11 +142,14 @@ class CruiseStateMachine:
         self._main_attempts = 0
 
     elif self.state == CruiseState.PRESS_MAIN_OFF:
-      done = self._press_main(now, lamp_main, target_on=False)
+      done = self._tap(now, not lamp_main, CruiseParams.MAIN_PRESS_NANOS, CruiseParams.MAIN_SETTLE_NANOS)
+      self.sw_main = 1 if self._pressing else 0
       if done is True:
         self._goto(CruiseState.IDLE, now)
       elif done is False:
-        self._goto(CruiseState.FAULT, now)
+        self._main_attempts += 1
+        if self._main_attempts >= CruiseParams.MAX_PRESS_ATTEMPTS:
+          self._goto(CruiseState.FAULT, now)
 
     elif self.state == CruiseState.FAULT:
       if long_press:

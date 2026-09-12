@@ -309,6 +309,18 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
         forged[byte] ^= mask
         self.assertFalse(self._tx(self._clu1_tx_msg(forged, sw_state=2)))
 
+  def test_cruise_accepts_a_recent_but_not_newest_cluster_frame(self):
+    payload = self._cruise_rx()
+    for _ in range(3):
+      self._cruise_rx()
+    self.assertTrue(self._tx(self._clu1_tx_msg(payload, sw_state=2)))
+
+  def test_cruise_rejects_a_cluster_frame_that_aged_out(self):
+    payload = self._cruise_rx()
+    for _ in range(9):
+      self._cruise_rx()
+    self.assertFalse(self._tx(self._clu1_tx_msg(payload, sw_state=2)))
+
   def test_cruise_rejects_every_button_but_set(self):
     for sw_state in (1, 3, 4, 5, 6, 7):
       with self.subTest(sw_state=sw_state):
