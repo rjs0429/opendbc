@@ -35,6 +35,7 @@
 // ── Signal value constants ────────────────────────────────────────────────────
 #define AVANTE_MD_VALID_SAS_STAT 7U
 #define AVANTE_MD_TCU1_DRIVE     5U
+#define AVANTE_MD_TCU1_SPORT     8U
 #define AVANTE_MD_TCU2_GEAR_MIN  1U
 #define AVANTE_MD_TCU2_GEAR_MAX  6U
 #define AVANTE_MD_TCU2_GEAR_R    14U
@@ -261,9 +262,10 @@ static bool avante_md_sas1_status_valid(const CANPacket_t *msg) {
   return msg->data[3] == AVANTE_MD_VALID_SAS_STAT;
 }
 
-// TCU1: D range when CUR_GR == 5 (byte1 bits 0-3).
+// TCU1: D or sport range when CUR_GR is 5 or 8 (byte1 bits 0-3).
 static bool avante_md_tcu1_in_drive(const CANPacket_t *msg) {
-  return (msg->data[1] & 0xFU) == AVANTE_MD_TCU1_DRIVE;
+  uint8_t gear = msg->data[1] & 0xFU;
+  return (gear == AVANTE_MD_TCU1_DRIVE) || (gear == AVANTE_MD_TCU1_SPORT);
 }
 
 // TCU2: D range when CUR_GR in 1..6 (byte1 bits 0-3).

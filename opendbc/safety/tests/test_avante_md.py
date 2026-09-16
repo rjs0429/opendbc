@@ -607,8 +607,22 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self._refresh_prereqs_on_tx = False
     self.assertFalse(super()._tx(self._vsm1_msg(0, steer_req=0)))
 
+  def test_gear_sport_all_gears_stay_engaged(self):
+    """TCU1.CUR_GR == 8 (sport) must stay engaged in every forward gear."""
+    self._set_prereqs_normal_and_stabilized()
+    self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=8))
+    for gear in (1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1):
+      self.safety.safety_rx_hook(self._tcu2_msg(gear=gear))
+      self.assertTrue(self.safety.get_controls_allowed())
+      self.assertTrue(self._tx(self._vsm1_msg(0, steer_req=0)))
+
+  def test_cruise_set_allowed_in_sport(self):
+    payload = self._cruise_rx()
+    self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=8))
+    self.assertTrue(self._tx(self._clu1_tx_msg(payload, sw_state=2)))
+
   def test_gear_not_d_tcu1_blocks_tx_and_disengages(self):
-    """TCU1.CUR_GR != 5 must disengage."""
+    """TCU1.CUR_GR other than 5 or 8 must disengage."""
     self._set_prereqs_normal_and_stabilized()
     self.assertTrue(self.safety.get_controls_allowed())
     self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=7))  # R

@@ -295,6 +295,18 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertTrue(self.CS.lat_active)
     self.assertIn(GearShifter.sport, CarInterface.DRIVABLE_GEARS)
 
+  def test_gear_sport_every_forward_gear_stays_active(self):
+    self.vehicle["TCU1"]["CUR_GR"] = 5
+    self._update()
+    self.assertTrue(self.CS.lat_active)
+    self.vehicle["TCU1"]["CUR_GR"] = 8
+    for gear in (1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1):
+      self.vehicle["TCU2"]["CUR_GR"] = gear
+      ret = self._update()
+      self.assertEqual(GearShifter.sport, ret.gearShifter)
+      self.assertTrue(self.CS.lat_active)
+      self.assertEqual(0, len(ret.buttonEvents))
+
   def test_gear_sport_requires_forward_tcu2_gear(self):
     self.vehicle["TCU1"]["CUR_GR"] = 8
     self.vehicle["TCU2"]["CUR_GR"] = 0
