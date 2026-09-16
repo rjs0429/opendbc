@@ -19,7 +19,7 @@ AVANTE_DRIVER_TORQUE_SIGN = -1  # VSM2 driver torque is right-positive; openpilo
 
 
 class MomentaryButtonDoubleClick:
-  DOUBLE_CLICK_INTERVAL = 3.0  # seconds
+  DOUBLE_CLICK_INTERVAL = 2.4  # seconds
   DEBOUNCE_FRAMES = 3  # 30 ms at 100 Hz CAN
 
   def __init__(self):

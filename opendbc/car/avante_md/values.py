@@ -25,7 +25,7 @@ class CruiseParams:
   """
   # ECO switch hold that toggles cruise. Must exceed MomentaryButtonDoubleClick.DOUBLE_CLICK_INTERVAL
   # so a cruise hold can never also read as the lateral-control double click.
-  HOLD_NANOS = 3_100_000_000
+  HOLD_NANOS = 2_500_000_000
 
   # Every press is a tap that is released as soon as its lamp answers, then a settle window before
   # the next attempt. MAIN settles longest: it is an edge toggle, so tapping again while its lamp is
