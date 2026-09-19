@@ -293,7 +293,7 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertEqual(GearShifter.sport, ret.gearShifter)
     self.assertTrue(self.CS.should_be_active)
     self.assertTrue(self.CS.lat_active)
-    self.assertIn(GearShifter.sport, CarInterface.DRIVABLE_GEARS)
+    assert GearShifter.sport in CarInterface.DRIVABLE_GEARS
 
   def test_gear_sport_every_forward_gear_stays_active(self):
     self.vehicle["TCU1"]["CUR_GR"] = 5

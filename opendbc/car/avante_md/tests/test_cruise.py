@@ -13,7 +13,7 @@ MAIN_FAULT_BUDGET = CruiseParams.MAX_PRESS_ATTEMPTS * (CruiseParams.MAIN_PRESS_N
 
 
 class FakeEcm:
-  """Minimal model of the measured ECM behaviour: CruiseSwMain is an edge toggle, SwState 2 sets."""
+  """Minimal model of the measured ECM behavior: CruiseSwMain is an edge toggle, SwState 2 sets."""
 
   def __init__(self, main=False, set_=False, main_responds=True, set_responds=True):
     self.main = main
@@ -282,8 +282,8 @@ class TestCruiseStateMachine(unittest.TestCase):
     for _ in range(int((CruiseParams.MAIN_PRESS_NANOS + CruiseParams.MAIN_SETTLE_NANOS) / FRAME) + 2):
       sim.step()
       pressed.append(sim.sm.sw_main)
-    self.assertIn(1, pressed)
-    self.assertIn(0, pressed[-5:])
+    assert 1 in pressed
+    assert 0 in pressed[-5:]
 
   def test_main_press_released_as_soon_as_the_lamp_answers(self):
     sim = Sim()
