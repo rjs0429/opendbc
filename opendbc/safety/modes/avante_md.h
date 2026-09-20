@@ -8,6 +8,7 @@
 #define AVANTE_MD_VSM2    0x165U
 #define AVANTE_MD_TCS5    0x1F1U
 #define AVANTE_MD_ESP2    0x220U
+#define AVANTE_MD_EMS6    0x260U
 #define AVANTE_MD_SAS1    0x2B0U
 #define AVANTE_MD_TCU1    0x43FU
 #define AVANTE_MD_TCU2    0x440U
@@ -29,6 +30,9 @@
 #define AVANTE_MD_CLU1_PRESS_MAX_US 2000000U
 #define AVANTE_MD_CLU1_MUTE_US      1000000U
 #define AVANTE_MD_CLU1_RELEASE_US   100000U
+#define AVANTE_MD_CLU1_RES_PRESS_MAX_US 300000U
+#define AVANTE_MD_CLU1_RES_INTERVAL_US  2000000U
+#define AVANTE_MD_EMS6_RECENT_US    100000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
 #define AVANTE_MD_STABILIZE_US      100000U
 
@@ -42,13 +46,22 @@
 #define AVANTE_MD_DRIVER_TORQUE_SIGN (-1)
 
 // ── Cruise switch injection limits ───────────────────────────────────────────
-// Only SET may be sent: without RES the ECM can never be asked to exceed the speed it was set at.
+// CANCEL only lowers engine output and is always allowed. SET engages at the current speed or lowers the
+// set speed. RES is the one button that can raise speed, so it is limited to one short press every 2 s
+// while cruise is already engaged: a tap then adds one step, and the remembered speed can't be resumed.
+// An upper bound of the set speed is tracked from the speed at engagement plus every RES press, and RES
+// needs the car to have nearly caught up with it and the next step to stay within the RES speed limit.
 #define AVANTE_MD_CLU1_SW_MASK   0x07U
+#define AVANTE_MD_CLU1_SW_RES    1U
 #define AVANTE_MD_CLU1_SW_SET    2U
+#define AVANTE_MD_CLU1_SW_CANCEL 4U
 #define AVANTE_MD_CLU1_MAIN_MASK 0x01U
 // SET is gated to 35..130 km/h, outside the 40..120 the controller uses (m/s * VEHICLE_SPEED_FACTOR)
 #define AVANTE_MD_SET_MIN_SPEED  9722
 #define AVANTE_MD_SET_MAX_SPEED  36111
+#define AVANTE_MD_RES_MAX_SPEED  33333
+#define AVANTE_MD_RES_STEP_SPEED 611
+#define AVANTE_MD_RES_LAG_SPEED  139
 
 // ── Steering torque safety limits (0.01 Nm units) ────────────────────────────
 // max 8.0 Nm, rate_up 8.0 Nm, rate_down 8.0 Nm, rt_delta 8.0 Nm, allowance 2.0 Nm
@@ -76,6 +89,7 @@ static AvanteMdRxState avante_md_tcu2_state    = {false, 0U};
 static AvanteMdRxState avante_md_vsm2_state    = {false, 0U};
 static AvanteMdRxState avante_md_sas1_state    = {false, 0U};
 static AvanteMdRxState avante_md_mdps1_state   = {false, 0U};
+static AvanteMdRxState avante_md_ems6_state    = {false, 0U};
 
 // ── Derived vehicle state flags ───────────────────────────────────────────────
 static bool avante_md_vsm1_normal          = false;
@@ -86,6 +100,7 @@ static bool avante_md_tcu2_drive           = false;
 static bool avante_md_doors_closed         = false;
 static bool avante_md_seatbelt_latched     = false;
 static bool avante_md_parking_brake_off    = false;
+static bool avante_md_cruise_set_lamp      = false;
 
 // ── Openpilot VSM1 TX tracking ────────────────────────────────────────────────
 static bool     avante_md_vsm1_tx_seen      = false;
@@ -105,6 +120,12 @@ static bool     avante_md_clu1_pressing       = false;
 static uint32_t avante_md_clu1_press_start    = 0U;
 static bool     avante_md_clu1_muted          = false;
 static uint32_t avante_md_clu1_mute_start     = 0U;
+static bool     avante_md_res_seen            = false;
+static bool     avante_md_res_pressing        = false;
+static uint32_t avante_md_res_press_start     = 0U;
+static uint8_t  avante_md_clu1_last_sw        = 0U;
+static bool     avante_md_set_track_valid     = false;
+static int      avante_md_set_track           = 0;
 
 // ── TX-block stabilization tracking ──────────────────────────────────────────
 static bool     avante_md_block_seen      = false;
@@ -277,6 +298,11 @@ static bool avante_md_tcu2_in_drive(const CANPacket_t *msg) {
 // CLU1: parking brake released when CF_Clu_ParkBrakeSw == 0 (byte0 bit7).
 static bool avante_md_clu1_parking_brake_off(const CANPacket_t *msg) {
   return (msg->data[0] & 0x80U) == 0U;
+}
+
+// EMS6: stock cruise engaged when CRUISE_LAMP_S == 1 (byte3 bit2).
+static bool avante_md_ems6_set_lamp_on(const CANPacket_t *msg) {
+  return (msg->data[3] & 0x04U) != 0U;
 }
 
 // CLU2: both doors closed when CF_Clu_DrvDrSw == 0 and CF_Clu_AstDrSw == 0.
@@ -529,6 +555,47 @@ static bool avante_md_clu1_press_gate(uint32_t now, bool pressed) {
   return allowed;
 }
 
+// A SET press while engaged lowers the set speed by one step.
+static void avante_md_track_set_decel(uint32_t now, uint8_t sw_state) {
+  bool released = (avante_md_clu1_last_sw != sw_state) ||
+                  (avante_md_clu1_tx_seen &&
+                   (safety_get_ts_elapsed(now, avante_md_clu1_tx_last_time) >= AVANTE_MD_CLU1_RELEASE_US));
+  if ((sw_state == AVANTE_MD_CLU1_SW_SET) && released && avante_md_cruise_set_lamp && avante_md_set_track_valid) {
+    avante_md_set_track -= AVANTE_MD_RES_STEP_SPEED;
+  }
+  avante_md_clu1_last_sw = sw_state;
+}
+
+// Limits RES to one press per interval, each no longer than a tap.
+static bool avante_md_clu1_res_gate(uint32_t now, bool res) {
+  bool allowed = true;
+
+  if (avante_md_res_pressing && avante_md_clu1_tx_seen &&
+      (safety_get_ts_elapsed(now, avante_md_clu1_tx_last_time) >= AVANTE_MD_CLU1_RELEASE_US)) {
+    avante_md_res_pressing = false;
+  }
+
+  if (!res) {
+    avante_md_res_pressing = false;
+  } else if (!avante_md_res_pressing) {
+    if (avante_md_res_seen &&
+        (safety_get_ts_elapsed(now, avante_md_res_press_start) < AVANTE_MD_CLU1_RES_INTERVAL_US)) {
+      allowed = false;
+    } else {
+      avante_md_res_pressing    = true;
+      avante_md_res_seen        = true;
+      avante_md_res_press_start = now;
+      avante_md_set_track      += AVANTE_MD_RES_STEP_SPEED;
+    }
+  } else if (safety_get_ts_elapsed(now, avante_md_res_press_start) > AVANTE_MD_CLU1_RES_PRESS_MAX_US) {
+    allowed = false;
+  } else {
+    // press still within its budget
+  }
+
+  return allowed;
+}
+
 static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
   uint8_t sw_state = msg->data[0] & AVANTE_MD_CLU1_SW_MASK;
   bool    sw_main  = (msg->data[3] & AVANTE_MD_CLU1_MAIN_MASK) != 0U;
@@ -536,11 +603,22 @@ static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
   bool valid = (avante_md_clu1_hist_len > 0U) &&
                !avante_md_rx_state_stale(&avante_md_clu1_state, now, AVANTE_MD_CLU1_RX_RECENT_US) &&
                avante_md_clu1_tx_is_copy(msg) &&
-               ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_SET));
+               ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_RES) ||
+                (sw_state == AVANTE_MD_CLU1_SW_SET) || (sw_state == AVANTE_MD_CLU1_SW_CANCEL));
 
-  if (valid && (sw_state != 0U)) {
+  if (valid && (sw_state == AVANTE_MD_CLU1_SW_SET)) {
     valid = (vehicle_speed.min >= AVANTE_MD_SET_MIN_SPEED) &&
             (vehicle_speed.max <= AVANTE_MD_SET_MAX_SPEED) &&
+            avante_md_cruise_vehicle_ok(now);
+  }
+
+  if (valid && (sw_state == AVANTE_MD_CLU1_SW_RES)) {
+    valid = avante_md_cruise_set_lamp && avante_md_set_track_valid &&
+            !avante_md_rx_state_stale(&avante_md_ems6_state, now, AVANTE_MD_EMS6_RECENT_US) &&
+            (vehicle_speed.min >= AVANTE_MD_SET_MIN_SPEED) &&
+            (vehicle_speed.max <= AVANTE_MD_RES_MAX_SPEED) &&
+            ((avante_md_set_track + AVANTE_MD_RES_STEP_SPEED) <= AVANTE_MD_RES_MAX_SPEED) &&
+            ((vehicle_speed.min + AVANTE_MD_RES_STEP_SPEED + AVANTE_MD_RES_LAG_SPEED) >= avante_md_set_track) &&
             avante_md_cruise_vehicle_ok(now);
   }
 
@@ -551,6 +629,14 @@ static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
 
   if (valid) {
     valid = avante_md_clu1_press_gate(now, (sw_state != 0U) || sw_main);
+  }
+
+  if (valid) {
+    valid = avante_md_clu1_res_gate(now, sw_state == AVANTE_MD_CLU1_SW_RES);
+  }
+
+  if (valid) {
+    avante_md_track_set_decel(now, sw_state);
   }
 
   return valid;
@@ -593,6 +679,19 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
 
     if (msg->addr == AVANTE_MD_ESP2) {
       avante_md_update_rx_state(&avante_md_esp2_state, now);
+    }
+
+    if (msg->addr == AVANTE_MD_EMS6) {
+      bool set_lamp = avante_md_ems6_set_lamp_on(msg);
+      avante_md_update_rx_state(&avante_md_ems6_state, now);
+      if (set_lamp && !avante_md_cruise_set_lamp) {
+        avante_md_set_track       = vehicle_speed.max;
+        avante_md_set_track_valid = true;
+      }
+      if (!set_lamp) {
+        avante_md_set_track_valid = false;
+      }
+      avante_md_cruise_set_lamp = set_lamp;
     }
 
     if (msg->addr == AVANTE_MD_WHL_PUL) {
@@ -728,6 +827,7 @@ static void avante_md_reset_state(void) {
   avante_md_reset_rx_state(&avante_md_vsm2_state);
   avante_md_reset_rx_state(&avante_md_sas1_state);
   avante_md_reset_rx_state(&avante_md_mdps1_state);
+  avante_md_reset_rx_state(&avante_md_ems6_state);
 
   avante_md_vsm1_normal       = false;
   avante_md_vsm2_normal       = false;
@@ -737,6 +837,7 @@ static void avante_md_reset_state(void) {
   avante_md_doors_closed      = false;
   avante_md_seatbelt_latched  = false;
   avante_md_parking_brake_off = false;
+  avante_md_cruise_set_lamp   = false;
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
@@ -753,6 +854,12 @@ static void avante_md_reset_state(void) {
   avante_md_clu1_press_start  = 0U;
   avante_md_clu1_muted        = false;
   avante_md_clu1_mute_start   = 0U;
+  avante_md_res_seen          = false;
+  avante_md_res_pressing      = false;
+  avante_md_res_press_start   = 0U;
+  avante_md_clu1_last_sw      = 0U;
+  avante_md_set_track_valid   = false;
+  avante_md_set_track         = 0;
   avante_md_steer_req_violation_latched = false;
 
   avante_md_block_seen      = false;
@@ -779,6 +886,9 @@ static safety_config avante_md_init(uint16_t param) {
               .ignore_checksum = true, .ignore_counter = true,
               .ignore_quality_flag = true}, {0}, {0}}},
     {.msg = {{AVANTE_MD_ESP2, AVANTE_MD_VEHICLE_BUS, 8, 100U,
+              .ignore_checksum = true, .ignore_counter = true,
+              .ignore_quality_flag = true}, {0}, {0}}},
+    {.msg = {{AVANTE_MD_EMS6, AVANTE_MD_VEHICLE_BUS, 8, 100U,
               .ignore_checksum = true, .ignore_counter = true,
               .ignore_quality_flag = true}, {0}, {0}}},
     {.msg = {{AVANTE_MD_WHL_PUL, AVANTE_MD_VEHICLE_BUS, 8, 100U,
