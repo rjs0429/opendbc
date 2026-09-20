@@ -394,8 +394,8 @@ class TestFollow(unittest.TestCase):
 
     sim.run(20 * SECOND)
     res = sim.requests.count(ButtonRequest.RES)
-    self.assertGreaterEqual(res, 1)
-    self.assertLessEqual(res, 2)
+    self.assertGreaterEqual(res, 2)
+    self.assertLessEqual(res, FollowParams.PENDING_BURST_TAPS + 3)
 
     sim.run(120 * SECOND)
     self.assertGreater(sim.ecm.v_set, start)
@@ -437,7 +437,10 @@ class TestFollow(unittest.TestCase):
     sim.ecm.hear_taps = False
     sim.plan = FollowPlan(True, 70., -0.1, False)
     sim.run(90 * SECOND)
-    self.assertEqual(FollowParams.TAP_DOWN_MISS_LIMIT, sim.requests.count(ButtonRequest.DECEL))
+    self.assertGreaterEqual(sim.requests.count(ButtonRequest.DECEL), FollowParams.TAP_DOWN_MISS_LIMIT)
+    sim.requests.clear()
+    sim.run(30 * SECOND)
+    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
 
   def test_no_trim_below_the_ecm_minimum(self):
     sim = Sim(FakeEcm(v_kph=45.), FollowPlan(True, 45., 0., False))
@@ -449,24 +452,25 @@ class TestFollow(unittest.TestCase):
   def test_climb_gates(self):
     cases = {
       "downshift pending": dict(target_gear=5),
-      "below top gear": dict(gear=5, target_gear=5),
-      "high rpm": dict(rpm=3000., turbine_rpm=3000.),
-      "pedal headroom": dict(pedal_pct=29.),
+      "overrev": dict(rpm=FollowParams.RPM_SOFT + 200., turbine_rpm=FollowParams.RPM_SOFT + 200.),
+      "pedal headroom": dict(pedal_pct=FollowParams.PEDAL_HOLD_PCT + 1.),
       "lockup slip": dict(turbine_rpm=1300.),
       "driver gas": dict(gas=True),
-      "uphill": dict(long_accel=FollowParams.LONG_ACCEL_BIAS + 0.15),
+      "uphill": dict(long_accel=FollowParams.LONG_ACCEL_BIAS + 0.35),
     }
     for name, override in cases.items():
       with self.subTest(name):
         sim = Sim(FakeEcm(v_kph=80.), FollowPlan(True, 80., 0., False))
         sim.engage()
-        sim.follow.v_user_kph = 90.
         sim.signals = normal_signals(**override)
+        sim.run(2 * SECOND)
+        sim.follow.v_user_kph = 90.
         sim.plan = FollowPlan(True, 90., 0.3, False)
+        sim.requests.clear()
         sim.run(30 * SECOND)
         self.assertNotIn(ButtonRequest.RES, sim.requests)
 
-  def test_climb_allowed_in_lower_gears_when_slow_or_in_sport(self):
+  def test_climb_allowed_below_top_gear(self):
     for v_kph, signals in ((55., dict(gear=5, target_gear=5, rpm=2200., turbine_rpm=2200.)),
                            (80., dict(gear=5, target_gear=5, sport=True))):
       with self.subTest(v_kph=v_kph):
@@ -498,27 +502,33 @@ class TestFollow(unittest.TestCase):
     sim.run(FollowParams.DOWNSHIFT_HOLD_NANOS - SECOND)
     self.assertNotIn(ButtonRequest.RES, sim.requests)
 
-  def test_kickdown_after_res_is_undone_once(self):
+  def _res_then(self, **after) -> 'Sim':
     sim = Sim()
     sim.engage()
     sim.follow.v_user_kph = 90.
     sim.plan = FollowPlan(True, 90., 0.3, False)
-    self.assertTrue(sim.run_until(lambda: ButtonRequest.RES in sim.requests, 10 * SECOND))
+    assert sim.run_until(lambda: ButtonRequest.RES in sim.requests, 10 * SECOND)
     sim.run(CruiseParams.TAP_NANOS + CruiseParams.TAP_GAP_NANOS + FRAME)
-    sim.signals.gear = 5
+    for k, v in after.items():
+      setattr(sim.signals, k, v)
+    return sim
+
+  def test_kickdown_after_res_is_undone_once(self):
+    sim = self._res_then(gear=5)
+    sim.plan = FollowPlan(True, 80., 0., False)
     sim.run(3 * SECOND)
     self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
 
   def test_rpm_spike_after_res_is_undone_once(self):
-    sim = Sim()
-    sim.engage()
-    sim.follow.v_user_kph = 90.
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    self.assertTrue(sim.run_until(lambda: ButtonRequest.RES in sim.requests, 10 * SECOND))
-    sim.run(CruiseParams.TAP_NANOS + CruiseParams.TAP_GAP_NANOS + FRAME)
-    sim.signals.rpm = FollowParams.RPM_HARD + 100.
+    sim = self._res_then(rpm=FollowParams.RPM_HARD + 100.)
+    sim.plan = FollowPlan(True, 80., 0., False)
     sim.run(3 * SECOND)
     self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
+
+  def test_kickdown_that_did_not_overshoot_is_kept(self):
+    sim = self._res_then(gear=5)
+    sim.run(3 * SECOND)
+    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
 
   def test_brake_switches_main_off_and_disarms(self):
     sim = Sim()

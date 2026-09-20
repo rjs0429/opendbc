@@ -47,7 +47,7 @@ class CruiseParams:
 
   # RES and SET- change the set speed by one step per tap and accelerate or coast while held, so
   # they are short open-loop taps. CANCEL only lowers output, so it may be held until its lamp answers.
-  TAP_NANOS = 200_000_000
+  TAP_NANOS = 300_000_000
   TAP_GAP_NANOS = 500_000_000
   CANCEL_PRESS_NANOS = 500_000_000
   CANCEL_SETTLE_NANOS = 600_000_000
@@ -79,6 +79,13 @@ class FollowParams:
   TAP_DOWN_MIN_KPH = 43.5
   # SET- taps the estimator judged unheard in a row before trimming down waits for the next capture.
   TAP_DOWN_MISS_LIMIT = 2
+  # A tap is normally held back until the estimator has resolved the previous one, which costs several
+  # seconds. An error this many steps wide is too far off to wait, and is closed by a burst of up to
+  # PENDING_BURST_TAPS taps that the estimator then resolves together.
+  PENDING_OVERRIDE_STEPS = 2
+  PENDING_BURST_TAPS = 3
+  # The upstream plan is meaningless for the first seconds after a capture: its MPC has just been reset.
+  CAPTURE_HOLD_NANOS = 2_000_000_000
   RESYNC_MIN_SPEED_KPH = 44.
   # Coasting this slow, with no lead to fall back from, means the driver is handling the traffic.
   COAST_DISARM_SPEED_KPH = 30.
@@ -90,29 +97,31 @@ class FollowParams:
   RECAPTURE_DELAY_NANOS = 1_500_000_000
   RECAPTURE_MIN_ACCEL = -0.05
   RECAPTURE_SPEED_MARGIN_KPH = 1.0
-  RECAPTURE_RETRY_NANOS = 5_000_000_000
+  RECAPTURE_RETRY_NANOS = 1_500_000_000
   RESYNC_SET_DELAY_NANOS = 300_000_000
 
   # Climb is held while any of these is true, and for GATE_CLEAR_NANOS after the last one clears.
-  GATE_CLEAR_NANOS = 3_000_000_000
+  GATE_CLEAR_NANOS = 1_000_000_000
   DOWNSHIFT_HOLD_NANOS = 5_000_000_000
-  UPHILL_GRADE_PCT = 1.0
-  TOP_GEAR = 6
-  TOP_GEAR_MIN_KPH = 60.
-  PEDAL_HOLD_PCT = 28.
-  PEDAL_HOLD_HIGH_PCT = 35.
+  UPHILL_GRADE_PCT = 3.0
+  # Engine demand saturates near 47%, and the downshifts measured on the road start above 34%. Holding
+  # the climb below that would hold it through ordinary cruising, which reads 20-40%.
+  PEDAL_HOLD_PCT = 44.
+  PEDAL_HOLD_HIGH_PCT = 46.
   PEDAL_HIGH_SPEED_KPH = 100.
-  RPM_PER_KPH_TOP_GEAR = 21.97
-  RPM_SOFT_MARGIN = 250.
+  # The car cruises the highway in 5th as often as in 6th, around 2800 rpm, so only a genuine overrev
+  # holds the climb.
+  RPM_SOFT = 3000.
   LOCKUP_CHECK_MIN_KPH = 80.
   LOCKUP_SLIP_RPM = 60.
-  # A RES that ends in a kickdown or overrevs is taken back with one SET- tap.
+  # A RES that overshot the target and ended in a kickdown or overrev is taken back with one SET- tap.
   RPM_HARD = 3500.
   RES_UNDO_WINDOW_NANOS = 10_000_000_000
 
   # ESP2 longitudinal acceleration minus the wheel-speed derivative reads grade with a small positive bias.
   LONG_ACCEL_BIAS = 0.03
   GRADE_TAU = 1.0
+  GRADE_MAX_PCT = 8.
   SIGNAL_STALE_NANOS = 250_000_000
   BRAKE_PRESSURE_BAR = 2.5
   BRAKE_PRESSURE_FRAMES = 1
@@ -127,7 +136,7 @@ class SetSpeedParams:
   # A settled speed this far from every candidate is not trusted as evidence for any of them.
   AMBIGUOUS_KPH = 0.75
   WINDOW_NANOS = 3_000_000_000
-  SETTLE_AFTER_TAP_NANOS = 5_000_000_000
+  SETTLE_AFTER_TAP_NANOS = 2_500_000_000
   SETTLE_AFTER_CAPTURE_NANOS = 3_000_000_000
   VERIFY_TIMEOUT_NANOS = 60_000_000_000
   STEADY_WHEEL_RANGE_KPH = 0.6

@@ -56,6 +56,7 @@ class FollowController:
     self._last_res_nanos: int | None = None
     self._res_undone = True
     self._grade_nanos: int | None = None
+    self._capture_nanos: int | None = None
     self._taps_since_commit: list[int] = []
     self._down_misses = 0
 
@@ -64,24 +65,26 @@ class FollowController:
     return self.estimator.v_set if self.estimator.valid else None
 
   def update(self, now: int, plan: FollowPlan, cruise: CruiseStateMachine, lamp_set: bool, v_cluster: float,
-             v_wheel: float, a_ego: float, signals: FollowSignals) -> ButtonRequest:
+             v_wheel: float, a_ego: float, signals: FollowSignals, pitch: float | None = None) -> ButtonRequest:
     """Runs before the button machine and returns what it should press next."""
     if not cruise.armed:
       self.estimator.reset()
       self.v_user_kph = None
       self._resync = False
       self._down_misses = 0
+      self._capture_nanos = None
       self._taps_since_commit.clear()
     elif lamp_set and not self._lamp_set_prev:
       self.estimator.capture(now, v_cluster)
       self._down_misses = 0
+      self._capture_nanos = now
       self._taps_since_commit.clear()
       if self.v_user_kph is None:
         self.v_user_kph = v_cluster
     self._lamp_set_prev = lamp_set and cruise.armed
 
-    self._update_grade(now, signals, a_ego)
-    self._update_gates(now, v_cluster, v_wheel, signals)
+    self._update_grade(now, pitch, signals, a_ego)
+    self._update_gates(now, v_cluster, signals)
 
     self.estimator.update(now, v_cluster, v_wheel * CV.MS_TO_KPH, self._steady(now, lamp_set, signals))
     self._count_down_misses()
@@ -128,23 +131,31 @@ class FollowController:
     self.estimator.last_commit_steps = None
 
   def _active_request(self, now: int, plan: FollowPlan, v_cluster: float, signals: FollowSignals) -> ButtonRequest:
-    if self._res_overshoot(now, signals):
+    est = self.estimator
+    # Taps the estimator has not resolved yet are counted as heard, so a burst does not overshoot.
+    v_set = est.v_set + P.TAP_STEP_KPH * sum(self._taps_since_commit)
+    error = plan.v_target_kph - v_set
+
+    if self._res_overshoot(now, error, signals):
       self._res_undone = True
       return ButtonRequest.DECEL
 
-    est = self.estimator
     if est.needs_resync and v_cluster >= P.RESYNC_MIN_SPEED_KPH:
       self._resync = True
       return ButtonRequest.CANCEL
-    if not est.resolved:
+    # A tap waits for the previous one to resolve, and the plan waits for the MPC to recover from its
+    # reset, unless the set speed is already several steps off.
+    far = abs(error) >= P.PENDING_OVERRIDE_STEPS * P.TAP_STEP_KPH
+    burst = far and len(self._taps_since_commit) < P.PENDING_BURST_TAPS
+    held = self._capture_nanos is None or (now - self._capture_nanos < P.CAPTURE_HOLD_NANOS and not far)
+    if not est.valid or est.needs_resync or held or (est.pending and not burst):
       self._down_since = self._up_since = None
       return ButtonRequest.NONE
 
-    error = plan.v_target_kph - est.v_set
-    down = (error <= -P.TARGET_DEADBAND_KPH and est.v_set - P.TAP_STEP_KPH >= max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH) and
+    down = (error <= -P.TARGET_DEADBAND_KPH and v_set - P.TAP_STEP_KPH >= max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH) and
             self._down_misses < P.TAP_DOWN_MISS_LIMIT)
     up = (error >= P.TARGET_DEADBAND_KPH and plan.a_target >= P.CLIMB_MIN_ACCEL and
-          self.v_user_kph is not None and est.v_set + P.TAP_STEP_KPH <= self.v_user_kph + P.TARGET_DEADBAND_KPH)
+          self.v_user_kph is not None and v_set + P.TAP_STEP_KPH <= self.v_user_kph + P.TARGET_DEADBAND_KPH)
 
     self._down_since = (self._down_since or now) if down else None
     self._up_since = (self._up_since or now) if up else None
@@ -157,8 +168,10 @@ class FollowController:
       return ButtonRequest.RES
     return ButtonRequest.NONE
 
-  def _res_overshoot(self, now: int, signals: FollowSignals) -> bool:
+  def _res_overshoot(self, now: int, error: float, signals: FollowSignals) -> bool:
     if self._res_undone or self._last_res_nanos is None or now - self._last_res_nanos > P.RES_UNDO_WINDOW_NANOS:
+      return False
+    if error > -P.TARGET_DEADBAND_KPH:
       return False
     kicked_down = self._downshift_nanos is not None and self._downshift_nanos >= self._last_res_nanos
     return kicked_down or signals.rpm > P.RPM_HARD
@@ -185,11 +198,15 @@ class FollowController:
       return ButtonRequest.SET
     return ButtonRequest.NONE
 
-  def _update_grade(self, now: int, signals: FollowSignals, a_ego: float) -> None:
-    if not signals.valid:
+  def _update_grade(self, now: int, pitch: float | None, signals: FollowSignals, a_ego: float) -> None:
+    if pitch is not None:
+      raw = math.tan(pitch) * 100.
+    elif signals.valid:
+      raw = (signals.long_accel - P.LONG_ACCEL_BIAS - a_ego) / 9.81 * 100.
+    else:
       self._grade_nanos = None
       return
-    raw = (signals.long_accel - P.LONG_ACCEL_BIAS - a_ego) / 9.81 * 100.
+    raw = max(-P.GRADE_MAX_PCT, min(P.GRADE_MAX_PCT, raw))
     if self._grade_nanos is None:
       self.grade_pct = raw
     else:
@@ -197,7 +214,7 @@ class FollowController:
       self.grade_pct += alpha * (raw - self.grade_pct)
     self._grade_nanos = now
 
-  def _update_gates(self, now: int, v_cluster: float, v_wheel: float, signals: FollowSignals) -> None:
+  def _update_gates(self, now: int, v_cluster: float, signals: FollowSignals) -> None:
     if not signals.valid:
       self.climb_blocked = True
       self._gate_clear_since = None
@@ -210,17 +227,14 @@ class FollowController:
     if self._downshift_nanos is not None and now - self._downshift_nanos >= P.DOWNSHIFT_HOLD_NANOS:
       self._downshift_nanos = None
 
-    top_gear_speed = v_cluster >= P.TOP_GEAR_MIN_KPH
     pedal_limit = P.PEDAL_HOLD_HIGH_PCT if v_cluster >= P.PEDAL_HIGH_SPEED_KPH else P.PEDAL_HOLD_PCT
-    rpm_soft = P.RPM_PER_KPH_TOP_GEAR * v_wheel * CV.MS_TO_KPH + P.RPM_SOFT_MARGIN
     slip = abs(signals.rpm - signals.turbine_rpm)
     blocked = (
       (0 < signals.target_gear < signals.gear) or
       self._downshift_nanos is not None or
-      (top_gear_speed and not signals.sport and signals.gear < P.TOP_GEAR) or
       self.grade_pct >= P.UPHILL_GRADE_PCT or
       signals.pedal_pct >= pedal_limit or
-      (top_gear_speed and signals.rpm > rpm_soft) or
+      signals.rpm > P.RPM_SOFT or
       (v_cluster >= P.LOCKUP_CHECK_MIN_KPH and slip >= P.LOCKUP_SLIP_RPM) or
       signals.gas
     )

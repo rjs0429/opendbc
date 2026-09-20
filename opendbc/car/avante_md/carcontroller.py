@@ -57,8 +57,9 @@ class CarController(CarControllerBase):
     v_cluster = CS.out.vEgoCluster * CV.MS_TO_KPH
     signals = CS.follow_signals
     plan = FollowPlan.from_car_control(CC)
+    pitch = CC.orientationNED[1] if len(CC.orientationNED) == 3 else None
     request = self.follow.update(now_nanos, plan, self.cruise, CS.cruise_lamp_set, v_cluster, CS.out.vEgo,
-                                 CS.out.aEgo, signals)
+                                 CS.out.aEgo, signals, pitch)
     self.cruise.update(now_nanos, CS.cruise_long_press, CS.cruise_lamps_valid, CS.cruise_lamp_main,
                        CS.cruise_lamp_set, v_cluster, CS.cruise_precond, clu1_fresh,
                        brake=signals.brake if signals.valid else None, follow_active=plan.valid, request=request,
