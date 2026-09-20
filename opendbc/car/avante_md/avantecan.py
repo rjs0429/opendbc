@@ -46,7 +46,9 @@ def create_vsm1(raw_vsm1: bytes, apply_torque: int, enabled: bool) -> CanData:
 CLU1 = 0x4F0
 CLU1_STALE_NANOS = 60_000_000
 CLU1_SW_NONE = 0
+CLU1_SW_RES = 1
 CLU1_SW_SET = 2
+CLU1_SW_CANCEL = 4
 
 
 def create_clu1(raw_clu1: bytes, sw_state: int, sw_main: int) -> CanData:

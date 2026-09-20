@@ -4,6 +4,7 @@ import unittest
 from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.avante_md.avantecan import CLU1, VSM1, vsm1_checksum
 from opendbc.car.avante_md.carcontroller import AVANTE_CONTROL_READY_STABILIZE_NANOS, CarController
+from opendbc.car.avante_md.follow.signals import FollowSignals
 from opendbc.car.avante_md.interface import CarInterface
 from opendbc.car.avante_md.values import CAR, CanBus, CarControllerParams
 from opendbc.car.common.conversions import Conversions as CV
@@ -34,6 +35,8 @@ class FakeCarState:
     self.cruise_lamp_set = False
     self.cruise_lamps_valid = False
     self.cruise_precond = False
+    self.follow_signals = FollowSignals()
+    self.follow_v_user_kph: float | None = None
     self.out = structs.CarState()
     self.out.vEgo = 31 * CV.KPH_TO_MS
 
@@ -73,6 +76,14 @@ class TestAvanteMdCruiseSend(unittest.TestCase):
     self.assertEqual(1, len(self._step()))
     self.assertEqual(1, len(self._step(new_frame=False)))
     self.assertEqual(1, len(self._step()))
+
+  def test_no_set_speed_reported_while_disengaged(self):
+    self.CC.actuators.speed = 20.
+    self._step()
+    actuators, _ = self.controller.update(self.CC.as_reader(), self.CS, self.now + 1)
+    self.assertEqual(0., actuators.speed)
+    self.assertEqual(0., actuators.accel)
+    self.assertIsNone(self.CS.follow_v_user_kph)
 
   def test_injected_frame_only_flips_cruise_bits(self):
     self._step()

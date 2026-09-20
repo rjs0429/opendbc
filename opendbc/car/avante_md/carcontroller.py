@@ -1,6 +1,7 @@
 from opendbc.car.avante_md import avantecan
 from opendbc.car.avante_md.avantecan import CLU1_STALE_NANOS, VSM1, VSM1_STALE_NANOS
 from opendbc.car.avante_md.cruise import CruiseStateMachine
+from opendbc.car.avante_md.follow.policy import FollowController, FollowPlan, wheel_from_cluster
 from opendbc.car.avante_md.values import CanBus, CarControllerParams
 from opendbc.car.can_definitions import CanData
 from opendbc.car.common.conversions import Conversions as CV
@@ -19,6 +20,7 @@ class CarController(CarControllerBase):
     self.control_ready_stable_last = False
     self.control_ready_start_nanos = 0
     self.cruise = CruiseStateMachine()
+    self.follow = FollowController()
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -52,8 +54,18 @@ class CarController(CarControllerBase):
       can_sends.append(CanData(VSM1, CS.vsm1_rx_raw, CanBus.EPS))
 
     clu1_fresh = CS.clu1_rx_raw is not None and (now_nanos - CS.clu1_rx_nanos) <= CLU1_STALE_NANOS
+    v_cluster = CS.out.vEgoCluster * CV.MS_TO_KPH
+    signals = CS.follow_signals
+    plan = FollowPlan.from_car_control(CC)
+    request = self.follow.update(now_nanos, plan, self.cruise, CS.cruise_lamp_set, v_cluster, CS.out.vEgo,
+                                 CS.out.aEgo, signals)
     self.cruise.update(now_nanos, CS.cruise_long_press, CS.cruise_lamps_valid, CS.cruise_lamp_main,
-                       CS.cruise_lamp_set, CS.out.vEgoCluster * CV.MS_TO_KPH, CS.cruise_precond, clu1_fresh)
+                       CS.cruise_lamp_set, v_cluster, CS.cruise_precond, clu1_fresh,
+                       brake=signals.brake if signals.valid else None, follow_active=plan.valid, request=request,
+                       coast_requested=plan.valid and plan.coast)
+    self.follow.after_buttons(now_nanos, self.cruise)
+    CS.follow_v_user_kph = self.follow.v_user_kph
+
     # The cluster's own released frame lands between ours, so a press is sent every cycle rather
     # than once per cluster frame.
     if self.cruise.transmitting and clu1_fresh:
@@ -64,6 +76,9 @@ class CarController(CarControllerBase):
     self.control_ready_stable_last = control_ready_stable
 
     new_actuators = CC.actuators.as_builder()
+    v_set = self.follow.v_set_kph
+    new_actuators.speed = wheel_from_cluster(v_set) * CV.KPH_TO_MS if v_set is not None and self.cruise.engaged else 0.
+    new_actuators.accel = 0.
     if control_ready_stable:
       new_actuators.torque = apply_torque / self.params.STEER_MAX * self.params.STEER_COMMAND_SIGN
       new_actuators.torqueOutputCan = apply_torque

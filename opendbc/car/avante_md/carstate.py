@@ -3,6 +3,8 @@ import time
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.avante_md.avantecan import CLU1, VSM1, VSM1_STALE_NANOS, vsm1_checksum_valid, vsm1_is_normal_state
+from opendbc.car.avante_md.follow.policy import wheel_from_cluster
+from opendbc.car.avante_md.follow.signals import FollowSignalDecoder, FollowSignals
 from opendbc.car.avante_md.values import CanBus, CarControllerParams, CruiseParams, DBC
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
@@ -156,12 +158,18 @@ class CarState(CarStateBase):
     self.cruise_lamps_valid = False
     self.cruise_precond = False
 
+    self.follow_decoder = FollowSignalDecoder()
+    self.follow_signals = FollowSignals()
+    # Set by the CarController: the driver's set speed while following is armed.
+    self.follow_v_user_kph: float | None = None
+
   def update_raw_frames(self, can_packets):
     for t, frames in can_packets:
       self.can_update_nanos = max(self.can_update_nanos, t)
       for addr, dat, src in frames:
         if src != CanBus.VEHICLE or len(dat) != 8:
           continue
+        self.follow_decoder.update_frame(addr, bytes(dat), t)
         if addr == VSM1:
           self.vsm1_rx_raw = bytes(dat)
           self.vsm1_rx_nanos = t
@@ -280,6 +288,10 @@ class CarState(CarStateBase):
     ret.cruiseState.enabled = False
     ret.cruiseState.standstill = False
     ret.cruiseState.nonAdaptive = False
+    if self.follow_v_user_kph is not None:
+      ret.cruiseState.speed = wheel_from_cluster(self.follow_v_user_kph) * CV.KPH_TO_MS
+      ret.cruiseState.speedCluster = self.follow_v_user_kph * CV.KPH_TO_MS
+    self.follow_signals = self.follow_decoder.decode(self.can_update_nanos)
 
     should_be_active = not unsafe_vehicle_state and not ret.steerFaultTemporary and not ret.steerFaultPermanent
     self.should_be_active = should_be_active

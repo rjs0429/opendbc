@@ -45,6 +45,100 @@ class CruiseParams:
   SET_READY_DWELL_NANOS = 200_000_000
   SET_READY_TIMEOUT_NANOS = 60_000_000_000
 
+  # RES and SET- change the set speed by one step per tap and accelerate or coast while held, so
+  # they are short open-loop taps. CANCEL only lowers output, so it may be held until its lamp answers.
+  TAP_NANOS = 200_000_000
+  TAP_GAP_NANOS = 500_000_000
+  CANCEL_PRESS_NANOS = 500_000_000
+  CANCEL_SETTLE_NANOS = 600_000_000
+  CANCEL_MAX_ATTEMPTS = 3
+  # CANCEL is not proven on this ECM. A coast whose CANCEL goes unanswered falls back to MAIN OFF; only
+  # repeated, separate failures stop trying CANCEL, and then only for a while.
+  CANCEL_FAILED_EPISODES = 3
+  CANCEL_EPISODE_SPACING_NANOS = 20_000_000_000
+  CANCEL_RETRY_NANOS = 300_000_000_000
+  # SET lamp drops without a brake are treated as a pause, but not endlessly.
+  UNEXPECTED_DROP_LIMIT = 3
+  UNEXPECTED_DROP_WINDOW_NANOS = 60_000_000_000
+  # A precondition blip shorter than this keeps the follow session.
+  PRECOND_GRACE_NANOS = 500_000_000
+  # While the stock cruise stays on after the buttons stopped answering, MAIN OFF is retried this often.
+  FAULT_RETRY_NANOS = 10_000_000_000
+
+
+class FollowParams:
+  """Lead following on top of the stock cruise, planned by openpilot and executed with button taps.
+
+  Set speeds are on the cluster scale, because that is what the driver reads and what SET captures.
+  """
+  CLUSTER_GAIN = 1.013
+  CLUSTER_OFFSET_KPH = 0.55
+  TAP_STEP_KPH = 2.12  # 2 km/h at the ECM
+  MIN_SPEED_KPH = 40.
+  # The ECM keeps its set speed at or above its own minimum, which sits above MIN_SPEED_KPH on the cluster.
+  TAP_DOWN_MIN_KPH = 43.5
+  # SET- taps the estimator judged unheard in a row before trimming down waits for the next capture.
+  TAP_DOWN_MISS_LIMIT = 2
+  RESYNC_MIN_SPEED_KPH = 44.
+  # Coasting this slow, with no lead to fall back from, means the driver is handling the traffic.
+  COAST_DISARM_SPEED_KPH = 30.
+
+  TARGET_DEADBAND_KPH = 1.5
+  TARGET_HOLD_NANOS = 1_500_000_000
+  CLIMB_MIN_ACCEL = 0.0
+
+  RECAPTURE_DELAY_NANOS = 1_500_000_000
+  RECAPTURE_MIN_ACCEL = -0.05
+  RECAPTURE_SPEED_MARGIN_KPH = 1.0
+  RECAPTURE_RETRY_NANOS = 5_000_000_000
+  RESYNC_SET_DELAY_NANOS = 300_000_000
+
+  # Climb is held while any of these is true, and for GATE_CLEAR_NANOS after the last one clears.
+  GATE_CLEAR_NANOS = 3_000_000_000
+  DOWNSHIFT_HOLD_NANOS = 5_000_000_000
+  UPHILL_GRADE_PCT = 1.0
+  TOP_GEAR = 6
+  TOP_GEAR_MIN_KPH = 60.
+  PEDAL_HOLD_PCT = 28.
+  PEDAL_HOLD_HIGH_PCT = 35.
+  PEDAL_HIGH_SPEED_KPH = 100.
+  RPM_PER_KPH_TOP_GEAR = 21.97
+  RPM_SOFT_MARGIN = 250.
+  LOCKUP_CHECK_MIN_KPH = 80.
+  LOCKUP_SLIP_RPM = 60.
+  # A RES that ends in a kickdown or overrevs is taken back with one SET- tap.
+  RPM_HARD = 3500.
+  RES_UNDO_WINDOW_NANOS = 10_000_000_000
+
+  # ESP2 longitudinal acceleration minus the wheel-speed derivative reads grade with a small positive bias.
+  LONG_ACCEL_BIAS = 0.03
+  GRADE_TAU = 1.0
+  SIGNAL_STALE_NANOS = 250_000_000
+  BRAKE_PRESSURE_BAR = 2.5
+  BRAKE_PRESSURE_FRAMES = 1
+
+
+class SetSpeedParams:
+  PRIOR_ONE_STEP = 0.75
+  PRIOR_MISSED = 0.24
+  PRIOR_TWO_STEPS = 0.01
+  OBS_SIGMA_KPH = 0.45
+  CONFIRM_PROB = 0.9
+  # A settled speed this far from every candidate is not trusted as evidence for any of them.
+  AMBIGUOUS_KPH = 0.75
+  WINDOW_NANOS = 3_000_000_000
+  SETTLE_AFTER_TAP_NANOS = 5_000_000_000
+  SETTLE_AFTER_CAPTURE_NANOS = 3_000_000_000
+  VERIFY_TIMEOUT_NANOS = 60_000_000_000
+  STEADY_WHEEL_RANGE_KPH = 0.6
+  # The ECM holds its speed uphill but overruns downhill and sags for a while after, so steady windows
+  # admit climbs, not descents or their aftermath.
+  STEADY_MIN_GRADE_PCT = -2.3
+  STEADY_MAX_GRADE_PCT = 5.
+  DOWNHILL_RECOVERY_NANOS = 20_000_000_000
+  TRACK_GAIN = 0.2
+  MISMATCH_LIMIT = 3
+
 
 class CarControllerParams:
   # VSM1 command safety allows up to 8.0 Nm; controller is capped at 8.0 Nm (STEER_MAX=800).

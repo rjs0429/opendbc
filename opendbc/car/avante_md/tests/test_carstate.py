@@ -475,6 +475,16 @@ class TestAvanteMdCarState(unittest.TestCase):
     self.assertFalse(ret.cruiseState.enabled)
     self.assertFalse(ret.cruiseState.standstill)
     self.assertFalse(ret.cruiseState.nonAdaptive)
+    self.assertEqual(0., ret.cruiseState.speed)
+
+  def test_follow_set_speed_is_reported_on_both_scales(self):
+    from opendbc.car.avante_md.follow.policy import wheel_from_cluster
+    from opendbc.car.common.conversions import Conversions as CV
+    self.CS.follow_v_user_kph = 80.
+    ret = self._update()
+    self.assertFalse(ret.cruiseState.enabled)
+    self.assertAlmostEqual(80. * CV.KPH_TO_MS, ret.cruiseState.speedCluster, places=5)
+    self.assertAlmostEqual(wheel_from_cluster(80.) * CV.KPH_TO_MS, ret.cruiseState.speed, places=5)
 
 
 if __name__ == "__main__":

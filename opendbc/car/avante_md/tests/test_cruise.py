@@ -122,7 +122,7 @@ class TestEcoLongPress(unittest.TestCase):
 class TestCruiseStateMachine(unittest.TestCase):
   def test_init_syncs_from_lamps(self):
     for main, set_, expected in ((False, False, CruiseState.IDLE),
-                                 (True, False, CruiseState.WAIT_SET_READY),
+                                 (True, False, CruiseState.PRESS_MAIN_OFF),
                                  (True, True, CruiseState.ACTIVE)):
       sim = Sim(FakeEcm(main=main, set_=set_))
       self.assertEqual(expected, sim.run(FRAME))
