@@ -19,7 +19,7 @@ TCU2 = 0x440
 BRAKE_ACT_RELEASED = 1
 TCU1_SPORT = 8
 
-WATCHED = (EMS_DCT1, EMS_DCT2, ESP2, EMS6, EMS1, TCU3, TCU1, TCU2)
+WATCHED = frozenset((EMS_DCT1, EMS_DCT2, ESP2, EMS6, EMS1, TCU3, TCU1, TCU2))
 
 
 @dataclass
@@ -43,12 +43,11 @@ class FollowSignalDecoder:
     self._pressure_frames = 0
 
   def update_frame(self, addr: int, dat: bytes, nanos: int) -> None:
-    if addr in WATCHED:
-      self._raw[addr] = dat
-      self._nanos[addr] = nanos
-      if addr == ESP2:
-        pressed = self._cyl_pres(dat) > FollowParams.BRAKE_PRESSURE_BAR
-        self._pressure_frames = self._pressure_frames + 1 if pressed else 0
+    self._raw[addr] = dat
+    self._nanos[addr] = nanos
+    if addr == ESP2:
+      pressed = self._cyl_pres(dat) > FollowParams.BRAKE_PRESSURE_BAR
+      self._pressure_frames = self._pressure_frames + 1 if pressed else 0
 
   @staticmethod
   def _cyl_pres(esp2: bytes) -> float:
