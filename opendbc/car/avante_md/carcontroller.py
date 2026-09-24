@@ -1,6 +1,7 @@
 from opendbc.car.avante_md import avantecan
 from opendbc.car.avante_md.avantecan import CLU1_STALE_NANOS, VSM1, VSM1_STALE_NANOS
 from opendbc.car.avante_md.cruise import CruiseStateMachine
+from opendbc.car.avante_md.follow.command import FollowCommand
 from opendbc.car.avante_md.follow.policy import FollowController, FollowPlan, wheel_from_cluster
 from opendbc.car.avante_md.values import CanBus, CarControllerParams
 from opendbc.car.can_definitions import CanData
@@ -21,6 +22,11 @@ class CarController(CarControllerBase):
     self.control_ready_start_nanos = 0
     self.cruise = CruiseStateMachine()
     self.follow = FollowController()
+    self.follow_command: FollowCommand | None = None
+
+  def set_follow_command(self, cmd: FollowCommand | None) -> None:
+    """Plan for the next update only; without a fresh command each cycle the car does not follow."""
+    self.follow_command = cmd
 
   def update(self, CC, CS, now_nanos):
     can_sends = []
@@ -56,7 +62,8 @@ class CarController(CarControllerBase):
     clu1_fresh = CS.clu1_rx_raw is not None and (now_nanos - CS.clu1_rx_nanos) <= CLU1_STALE_NANOS
     v_cluster = CS.out.vEgoCluster * CV.MS_TO_KPH
     signals = CS.follow_signals
-    plan = FollowPlan.from_car_control(CC)
+    plan = FollowPlan.from_command(self.follow_command)
+    self.follow_command = None
     pitch = CC.orientationNED[1] if len(CC.orientationNED) == 3 else None
     request = self.follow.update(now_nanos, plan, self.cruise, CS.cruise_lamp_set, v_cluster, CS.out.vEgo,
                                  CS.out.aEgo, signals, pitch)

@@ -616,7 +616,7 @@ struct CarParams {
     mazda @13;
     nissan @14;
     volkswagen @15;
-    toyotaIpas @16;
+    avanteMd @16;
     allOutput @17;
     gmAscm @18;
     noOutput @19;  # like silent but without silent CAN TXs
@@ -635,7 +635,6 @@ struct CarParams {
     fcaGiorgio @32;
     rivian @33;
     volkswagenMeb @34;
-    avanteMd @35;
   }
 
   enum SteerControlType {

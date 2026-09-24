@@ -2,6 +2,9 @@
 
 #include "opendbc/safety/declarations.h"
 
+// Takes the retired toyotaIpas slot of CarParams.SafetyModel rather than a new number.
+#define SAFETY_AVANTE_MD 16U
+
 // ── Message IDs ──────────────────────────────────────────────────────────────
 #define AVANTE_MD_TCS1    0x153U
 #define AVANTE_MD_VSM1    0x164U
@@ -924,6 +927,7 @@ static safety_config avante_md_init(uint16_t param) {
   return BUILD_SAFETY_CFG(avante_md_rx_checks, AVANTE_MD_TX_MSGS);
 }
 
+extern const safety_hooks avante_md_hooks;
 const safety_hooks avante_md_hooks = {
   .init             = avante_md_init,
   .rx               = avante_md_rx_hook,

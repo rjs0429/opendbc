@@ -4,6 +4,7 @@ import unittest
 from opendbc.can import CANPacker
 from opendbc.car.avante_md.avantecan import CLU1_SW_CANCEL, CLU1_SW_RES, CLU1_SW_SET
 from opendbc.car.avante_md.cruise import ButtonRequest, CruiseState, CruiseStateMachine
+from opendbc.car.avante_md.follow.command import FollowCommand
 from opendbc.car.avante_md.follow.estimator import SetSpeedEstimator
 from opendbc.car.avante_md.follow.policy import FollowController, FollowPlan, cluster_from_wheel, wheel_from_cluster
 from opendbc.car.avante_md.follow.signals import FollowSignalDecoder, FollowSignals
@@ -827,15 +828,12 @@ class TestFollow(unittest.TestCase):
 
 
 class TestFollowPlan(unittest.TestCase):
-  def test_zero_speed_means_no_plan(self):
-    from opendbc.car import structs
-    CC = structs.CarControl.new_message()
-    self.assertFalse(FollowPlan.from_car_control(CC.as_reader()).valid)
+  def test_no_command_means_no_plan(self):
+    self.assertFalse(FollowPlan.from_command(None).valid)
+    self.assertFalse(FollowPlan.from_command(FollowCommand(0., 0., False)).valid)
+    self.assertFalse(FollowPlan.from_command(FollowCommand(float('nan'), 0., False)).valid)
 
-    CC.actuators.speed = 20.
-    CC.actuators.accel = -0.4
-    CC.cruiseControl.cancel = True
-    plan = FollowPlan.from_car_control(CC.as_reader())
+    plan = FollowPlan.from_command(FollowCommand(20., -0.4, True))
     self.assertTrue(plan.valid)
     self.assertAlmostEqual(cluster_from_wheel(72.), plan.v_target_kph)
     self.assertAlmostEqual(-0.4, plan.a_target, places=5)

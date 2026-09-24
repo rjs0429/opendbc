@@ -1,15 +1,15 @@
 """Turns openpilot's follow plan into stock cruise button requests.
 
-openpilot sends the plan inside CarControl: actuators.speed is the target speed (m/s, 0 when there is no
-plan), actuators.accel the planner's acceleration and cruiseControl.cancel a request to coast. The ECM set
-speed is estimated here and moved one tap at a time: CANCEL to coast when the lead needs more deceleration
-than the set speed can give, SET to take the current speed back, SET- and RES to trim, and RES only while
-the powertrain has headroom.
+openpilot hands the plan to the car controller as a FollowCommand: the target speed (m/s), the planner's
+acceleration and a request to coast. The ECM set speed is estimated here and moved one tap at a time: CANCEL
+to coast when the lead needs more deceleration than the set speed can give, SET to take the current speed
+back, SET- and RES to trim, and RES only while the powertrain has headroom.
 """
 import math
 from dataclasses import dataclass
 
 from opendbc.car.avante_md.cruise import ButtonRequest, CruiseState, CruiseStateMachine
+from opendbc.car.avante_md.follow.command import FollowCommand
 from opendbc.car.avante_md.follow.estimator import SetSpeedEstimator
 from opendbc.car.avante_md.follow.signals import FollowSignals
 from opendbc.car.avante_md.values import FollowParams as P, SetSpeedParams
@@ -32,11 +32,10 @@ class FollowPlan:
   coast: bool = False
 
   @classmethod
-  def from_car_control(cls, CC) -> 'FollowPlan':
-    speed = CC.actuators.speed
-    if not math.isfinite(speed) or speed <= 0.:
+  def from_command(cls, cmd: FollowCommand | None) -> 'FollowPlan':
+    if cmd is None or not math.isfinite(cmd.v_target) or cmd.v_target <= 0.:
       return cls()
-    return cls(True, cluster_from_wheel(speed * CV.MS_TO_KPH), CC.actuators.accel, CC.cruiseControl.cancel)
+    return cls(True, cluster_from_wheel(cmd.v_target * CV.MS_TO_KPH), cmd.a_target, cmd.coast)
 
 
 class FollowController:
