@@ -2,15 +2,23 @@
 
 The ECM never reports its set speed. SET captures the current speed, and every RES or SET- tap moves it by
 one step, but a tap can go unheard. Taps therefore build a distribution over the net number of steps that
-registered, and the speed the ECM settles at on a steady road decides it. The caller sends no further tap
-while a decision is pending.
+registered. Whether the engine answered the latest tap is evidence on that tap alone, and the speed the ECM
+settles at on a steady road decides the net.
 """
 import math
 from collections import deque
 
-from opendbc.car.avante_md.values import FollowParams, SetSpeedParams as P
+from opendbc.car.avante_md.values import FollowParams, SetSpeedParams as P, TapResponseParams
 
 TAP_PRIOR = {1: P.PRIOR_ONE_STEP, 0: P.PRIOR_MISSED, 2: P.PRIOR_TWO_STEPS}
+
+
+def _add_tap(prior: dict[int, float], step: int, tap: dict[int, float]) -> dict[int, float]:
+  net: dict[int, float] = {}
+  for n, p in prior.items():
+    for k, q in tap.items():
+      net[n + step * k] = net.get(n + step * k, 0.) + p * q
+  return net
 
 
 class SetSpeedEstimator:
@@ -21,6 +29,10 @@ class SetSpeedEstimator:
     self.last_commit_steps: int | None = None
     self._pending: dict[int, float] | None = None
     self._pending_base = 0.
+    # The distribution before the latest tap and that tap's own, while its answer can still come in.
+    self._before: dict[int, float] | None = None
+    self._last: tuple[int, dict[int, float]] | None = None
+    self._last_answered = False
     self._pending_nanos = 0
     self._settle_until = 0
     self._mismatches = 0
@@ -35,6 +47,10 @@ class SetSpeedEstimator:
   def resolved(self) -> bool:
     return self.valid and not self.pending and not self.needs_resync
 
+  @property
+  def v_set_likely(self) -> float:
+    return self._candidate(self._likeliest()) if self._pending is not None else self.v_set
+
   def reset(self) -> None:
     self.__init__()
 
@@ -44,6 +60,8 @@ class SetSpeedEstimator:
     self.needs_resync = False
     self.last_commit_steps = None
     self._pending = None
+    self._before = None
+    self._last = None
     self._mismatches = 0
     self._agreements = 0
     self._settle(now, P.SETTLE_AFTER_CAPTURE_NANOS)
@@ -56,14 +74,30 @@ class SetSpeedEstimator:
     if prior is None:
       prior = {0: 1.}
       self._pending_base = self.v_set
-    pending: dict[int, float] = {}
-    for net, p in prior.items():
-      for k, q in TAP_PRIOR.items():
-        pending[net + step * k] = pending.get(net + step * k, 0.) + p * q
-    self._pending = pending
+    self._before = prior
+    self._last = (step, dict(TAP_PRIOR))
+    self._last_answered = False
+    self._pending = _add_tap(prior, step, TAP_PRIOR)
     self._pending_nanos = now
     self._mismatches = 0
     self._settle(now, P.SETTLE_AFTER_TAP_NANOS)
+
+  def answer(self, heard: bool) -> None:
+    """Whether the engine acted on the latest tap, judged from its throttle demand."""
+    if self._pending is None or self._before is None or self._last is None or self._last_answered:
+      return
+    step, tap = self._last
+    p_heard = TapResponseParams.P_ANSWER_HEARD if heard else TapResponseParams.P_SILENT_HEARD
+    p_missed = TapResponseParams.P_ANSWER_MISSED if heard else TapResponseParams.P_SILENT_MISSED
+    tap = {k: q * (p_heard if k else p_missed) for k, q in tap.items()}
+    total = sum(tap.values())
+    tap = {k: q / total for k, q in tap.items()}
+    self._last = (step, tap)
+    self._last_answered = True
+    self._pending = _add_tap(self._before, step, tap)
+    best = self._likeliest()
+    if self._pending[best] >= P.CONFIRM_PROB:
+      self._commit(best)
 
   def update(self, now: int, v_cluster: float, v_wheel: float, steady: bool) -> None:
     if not self.valid:
@@ -103,6 +137,7 @@ class SetSpeedEstimator:
       posterior = {k: prior * self._likelihood(z, self._candidate(k)) for k, prior in self._pending.items()}
       total = sum(posterior.values())
       self._pending = {k: p / total for k, p in posterior.items()}
+      self._before = None
       best = self._likeliest()
       if self._pending[best] >= P.CONFIRM_PROB:
         self._commit(best)
@@ -132,6 +167,7 @@ class SetSpeedEstimator:
     self.v_set = self._candidate(net_steps)
     self.last_commit_steps = net_steps
     self._pending = None
+    self._before = None
     self._mismatches = 0
     self._agreements = 0
 

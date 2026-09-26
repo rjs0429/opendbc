@@ -77,15 +77,16 @@ class FollowParams:
   MIN_SPEED_KPH = 40.
   # The ECM keeps its set speed at or above its own minimum, which sits above MIN_SPEED_KPH on the cluster.
   TAP_DOWN_MIN_KPH = 43.5
-  # SET- taps the estimator judged unheard in a row before trimming down waits for the next capture.
-  TAP_DOWN_MISS_LIMIT = 2
+  # SET- taps the estimator judged unheard in a row before trimming down pauses.
+  TAP_DOWN_MISS_LIMIT = 3
+  TAP_DOWN_PAUSE_NANOS = 30_000_000_000
+  # A tap the engine did not answer is pressed again at once, this many times in a row.
+  QUICK_RETRY_LIMIT = 2
   # A tap is normally held back until the estimator has resolved the previous one, which costs several
   # seconds. An error this many steps wide is too far off to wait, and is closed by a burst of up to
   # PENDING_BURST_TAPS taps that the estimator then resolves together.
   PENDING_OVERRIDE_STEPS = 2
   PENDING_BURST_TAPS = 3
-  # The upstream plan is meaningless for the first seconds after a capture: its MPC has just been reset.
-  CAPTURE_HOLD_NANOS = 2_000_000_000
   RESYNC_MIN_SPEED_KPH = 44.
   # Coasting this slow, with no lead to fall back from, means the driver is handling the traffic.
   COAST_DISARM_SPEED_KPH = 30.
@@ -117,6 +118,9 @@ class FollowParams:
   # A RES that overshot the target and ended in a kickdown or overrev is taken back with one SET- tap.
   RPM_HARD = 3500.
   RES_UNDO_WINDOW_NANOS = 10_000_000_000
+  # Turning back within this time after a tap needs the target half a step further off.
+  REVERSAL_NANOS = 20_000_000_000
+  REVERSAL_EXTRA_KPH = TAP_STEP_KPH / 2
 
   # ESP2 longitudinal acceleration minus the wheel-speed derivative reads grade with a small positive bias.
   LONG_ACCEL_BIAS = 0.03
@@ -147,6 +151,27 @@ class SetSpeedParams:
   DOWNHILL_RECOVERY_NANOS = 20_000_000_000
   TRACK_GAIN = 0.2
   MISMATCH_LIMIT = 3
+
+
+class TapResponseParams:
+  """The ECM's throttle demand (PV_AV_CAN) moves within a second of a tap it took, starting a few tenths of a
+  second after the press, and stays put through one it missed. Other swings of that size are rare in steady
+  cruise, so an answer is strong but not certain evidence."""
+  HISTORY_NANOS = 3_000_000_000
+  BASELINE_NANOS = 1_000_000_000
+  BASELINE_MIN_SAMPLES = 50
+  BASELINE_STD_PCT = 1.5
+  WINDOW_NANOS = 1_000_000_000
+  ANSWER_PCT = 6.
+  SILENT_PCT = 3.
+  # The demand needs room to move: it saturates near the top and cannot drop below closed throttle.
+  RISE_CEILING_PCT = 40.
+  DROP_FLOOR_PCT = 8.
+  # Likelihoods of an answer, and of silence, from a tap the ECM took and from one it missed.
+  P_ANSWER_HEARD = 0.9
+  P_ANSWER_MISSED = 0.1
+  P_SILENT_HEARD = 0.03
+  P_SILENT_MISSED = 0.9
 
 
 class CarControllerParams:
