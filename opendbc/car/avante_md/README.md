@@ -37,14 +37,9 @@ read what upstream changed in `car/hyundai/`, `car/interfaces.py`, `car/structs.
 |---|---|
 | `test_registration.py` | safety number matches between capnp and C, unused upstream, accepted by panda |
 | `test_safety_agreement.py` | the port and panda safety agree on gear, doors, seatbelt, parking brake, MDPS faults and SAS state |
-| `test_tx_contract.py` | panda safety passes every cruise button frame the controller sends in the follow scenarios, with messages fed every control frame |
+| `test_tx_contract.py` | panda safety passes every cruise button frame the controller sends in the follow scenarios, with messages fed every control frame and at the bus rates measured on the car |
 
 ## Known issue
-
-At the bus rates measured on the car, panda's RES gate cuts RES after a few taps: it raises its tracked set speed by
-`AVANTE_MD_RES_STEP_SPEED` per press while one ECM tap moves the car less. `TestTxContractAtBusRates` in
-`test_tx_contract.py` replays a climb at bus rates and asserts that RES frames, and only RES frames, are rejected; it
-fails once this is fixed, and should then require no rejections.
 
 Not yet cross-checked between the port and panda: EMS6 cruise lamps, VSM1 normal state, VSM2 driver torque and TCS5
 wheel speed.

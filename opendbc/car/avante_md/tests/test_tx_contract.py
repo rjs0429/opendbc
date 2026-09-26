@@ -96,10 +96,7 @@ class TestTxContract(follow.TestFollow):
 class TestTxContractAtBusRates(unittest.TestCase):
   def test_climb_taps_reach_the_ecm(self):
     rejected = self._rejected("test_climb_taps_one_step_at_a_time_up_to_the_driver_speed")
-    # Known defect: panda raises its tracked set speed by RES_STEP_SPEED per RES while the ECM moves less per tap, so
-    # the RES gate cuts RES taps. Once fixed this fails: assert rejected == [] instead.
-    self.assertTrue(rejected, "the RES gate no longer cuts taps: make this test require no rejections")
-    self.assertEqual({avantecan.CLU1_SW_RES}, {sw_state for _, sw_state, _ in rejected})
+    self.assertEqual([], rejected, "panda safety rejected cruise frames the controller sent (nanos, sw_state, sw_main)")
 
   @staticmethod
   def _rejected(scenario: str) -> list[tuple[int, int, int]]:

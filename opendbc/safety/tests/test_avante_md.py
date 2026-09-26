@@ -355,77 +355,22 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     self.safety.safety_rx_hook(common.make_msg(0, 0x4F0, 8, bytes(payload)))
     self.assertFalse(self._tx(self._clu1_tx_msg(payload, sw_state=1)))
 
-  def test_cruise_res_blocked_outside_speed_range(self):
-    for speed_ms in (9.0, 34.0):
+  def test_cruise_res_allowed_across_the_set_speed_range(self):
+    for speed_ms in (10.0, 36.0):
       with self.subTest(speed_ms=speed_ms):
-        self.assertFalse(self._cruise_tx(sw_state=1, speed_ms=speed_ms, set_lamp=True))
+        self.assertTrue(self._cruise_tx(sw_state=1, speed_ms=speed_ms, set_lamp=True))
 
-  def test_cruise_res_blocked_out_of_drive(self):
-    self.assertFalse(self._cruise_tx(sw_state=1, gear_drive=False, set_lamp=True))
+  def test_cruise_res_blocked_where_set_is(self):
+    for kwargs in ({'speed_ms': 9.0}, {'speed_ms': 37.0}, {'gear_drive': False}, {'door_open': True},
+                   {'seatbelt_unlatched': True}):
+      with self.subTest(**kwargs):
+        self.assertFalse(self._cruise_tx(sw_state=2, **kwargs))
+        self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=True, **kwargs))
 
-  def test_cruise_res_press_is_short(self):
-    for _ in range(16):  # 0..0.3 s at 20 ms
+  def test_cruise_res_held_and_repeated_like_set(self):
+    for _ in range(50):  # 1 s held
       self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-    self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=True))
-
-  def test_cruise_res_presses_are_spaced(self):
-    for _ in range(5):
-      self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-    for _ in range(10):  # released for 0.2 s
-      self._cruise_rx(set_lamp=True)
-    self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=True))
-
-    for _ in range(85):  # 2 s after the first press started
-      self._cruise_rx(set_lamp=True)
-    self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-
-  def test_cruise_res_released_by_another_button(self):
-    self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-    self.assertTrue(self._cruise_tx(sw_state=4, set_lamp=True))
-    self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=True))
-
-  def _engage_at(self, speed_ms):
-    self._cruise_rx(speed_ms=speed_ms)
-    self._cruise_rx(speed_ms=speed_ms, set_lamp=True)
-
-  def _res_press(self, speed_ms):
-    for _ in range(110):  # wait out the RES interval, cruise engaged
-      self._cruise_rx(speed_ms=speed_ms, set_lamp=True)
-    return self._cruise_tx(sw_state=1, speed_ms=speed_ms, set_lamp=True)
-
-  def test_cruise_res_needs_the_car_to_catch_up(self):
-    self._engage_at(20.0)
-    self.assertTrue(self._res_press(20.0))
-    self.assertTrue(self._res_press(20.0))
-    self.assertFalse(self._res_press(20.0))
-    self.assertTrue(self._res_press(20.0 + 2 * 0.611 - 0.139))
-
-  def test_cruise_res_set_speed_capped(self):
-    self._engage_at(32.8)
-    self.assertFalse(self._res_press(32.8))
-
-  def test_cruise_set_tap_lowers_the_tracked_set_speed(self):
-    self._engage_at(20.0)
-    self.assertTrue(self._res_press(20.0))
-    self.assertTrue(self._res_press(20.0))
-    self.assertTrue(self._cruise_tx(sw_state=2, speed_ms=20.0, set_lamp=True))
-    for _ in range(10):
-      self._cruise_rx(speed_ms=20.0, set_lamp=True)
-    self.assertTrue(self._res_press(20.0))
-
-  def test_cruise_res_tracking_restarts_on_engagement(self):
-    self._engage_at(20.0)
-    self.assertTrue(self._res_press(20.0))
-    self.assertTrue(self._res_press(20.0))
-    self._cruise_rx(speed_ms=20.0)
-    self._engage_at(20.0)
-    self.assertTrue(self._res_press(20.0))
-
-  def test_cruise_other_buttons_do_not_start_the_res_interval(self):
-    for _ in range(5):
-      self.assertTrue(self._cruise_tx(sw_state=2, set_lamp=True))
-    for _ in range(10):
-      self._cruise_rx(set_lamp=True)
+    self.assertTrue(self._cruise_tx(set_lamp=True))
     self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
 
   def test_cruise_set_blocked_outside_speed_range(self):
