@@ -101,10 +101,17 @@ class FollowParams:
   RECAPTURE_RETRY_NANOS = 1_500_000_000
   RESYNC_SET_DELAY_NANOS = 300_000_000
 
-  # A kickdown, seen as a downshift or an overrev, holds the next RES for this long after it.
+  # A kickdown holds the next RES for this long after it: a downshift the transmission announces or makes, or an
+  # overrev above ordinary fifth-gear cruising.
   KICKDOWN_HOLD_NANOS = 5_000_000_000
-  # The car cruises the highway in 5th as often as in 6th, around 2800 rpm, so only a genuine overrev counts.
-  KICKDOWN_RPM = 3000.
+  KICKDOWN_RPM = 3300.
+  # A RES answered by a two-gear kickdown or a lasting overrev is taken back with one SET-, and the climb then waits
+  # longer so the same hill does not repeat it.
+  RES_UNDO_WINDOW_NANOS = 10_000_000_000
+  RES_UNDO_GEARS = 2
+  RES_UNDO_RPM = 3500.
+  RES_UNDO_RPM_NANOS = 300_000_000
+  RES_HOLD_AFTER_UNDO_NANOS = 20_000_000_000
   # Turning back within this time after a tap needs the target half a step further off.
   REVERSAL_NANOS = 20_000_000_000
   REVERSAL_EXTRA_KPH = TAP_STEP_KPH / 2

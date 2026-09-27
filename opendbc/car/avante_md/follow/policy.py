@@ -3,8 +3,8 @@
 openpilot hands the plan to the car controller as a FollowCommand: the target speed (m/s), the planner's
 acceleration and a request to coast. The ECM set speed is estimated here and moved one tap at a time: CANCEL
 to coast when the lead needs more deceleration than the set speed can give, SET to take the current speed
-back, SET- and RES to trim, and no RES for a while after a kickdown. A tap the engine did not answer is pressed
-again at once.
+back, SET- and RES to trim, and no RES for a while after a kickdown. A RES that set off a hard kickdown is taken back.
+A tap the engine did not answer is pressed again at once.
 """
 import math
 from dataclasses import dataclass
@@ -63,6 +63,11 @@ class FollowController:
     self._last_tap_nanos: int | None = None
     self._retry_dir = 0
     self._quick_retries = 0
+    self._rpm_high_since: int | None = None
+    self._res_nanos: int | None = None
+    self._res_gear = 0
+    self._res_missed = False
+    self._undo_nanos: int | None = None
 
   @property
   def v_set_kph(self) -> float | None:
@@ -95,6 +100,7 @@ class FollowController:
       retry = not heard and self._quick_retries < P.QUICK_RETRY_LIMIT
       self._retry_dir = self._last_tap_dir if retry else 0
       self._quick_retries = self._quick_retries + 1 if retry else 0
+      self._res_missed = self._res_missed or (not heard and self._last_tap_dir > 0)
     self.estimator.update(now, v_cluster, v_wheel * CV.MS_TO_KPH, self._steady(now, lamp_set, signals))
     self._count_down_misses(now)
 
@@ -123,6 +129,10 @@ class FollowController:
       self._last_tap_dir = cruise.tap_event
       self._last_tap_nanos = now
       self._retry_dir = 0
+      if cruise.tap_event > 0:
+        self._res_nanos = now
+        self._res_gear = self._gear_prev
+        self._res_missed = False
 
   def _steady(self, now: int, lamp_set: bool, signals: FollowSignals) -> bool:
     if self.grade_pct <= SetSpeedParams.STEADY_MIN_GRADE_PCT:
@@ -138,6 +148,8 @@ class FollowController:
     self._last_tap_nanos = None
     self._retry_dir = 0
     self._quick_retries = 0
+    self._res_nanos = None
+    self._undo_nanos = None
 
   def _count_down_misses(self, now: int) -> None:
     if self._down_paused_nanos is not None and now - self._down_paused_nanos >= P.TAP_DOWN_PAUSE_NANOS:
@@ -157,6 +169,11 @@ class FollowController:
     est = self.estimator
     v_set = est.v_set_likely
     error = plan.v_target_kph - v_set
+
+    if self._res_overshoot(now, v_set, signals):
+      self._res_nanos = None
+      self._undo_nanos = now
+      return ButtonRequest.DECEL
 
     if est.needs_resync and v_cluster >= P.RESYNC_MIN_SPEED_KPH:
       self._resync = True
@@ -231,15 +248,28 @@ class FollowController:
       self.grade_pct += alpha * (raw - self.grade_pct)
     self._grade_nanos = now
 
+  def _res_overshoot(self, now: int, v_set: float, signals: FollowSignals) -> bool:
+    if self._res_nanos is None or self._res_missed or now - self._res_nanos > P.RES_UNDO_WINDOW_NANOS:
+      return False
+    if v_set - P.TAP_STEP_KPH < max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH):
+      return False
+    lowest = min((g for g in (signals.gear, signals.target_gear) if g > 0), default=self._res_gear)
+    overrev = self._rpm_high_since is not None and now - self._rpm_high_since >= P.RES_UNDO_RPM_NANOS
+    return self._res_gear - lowest >= P.RES_UNDO_GEARS or overrev
+
   def _kicked_down(self, now: int) -> bool:
     return self._kickdown_nanos is not None and now - self._kickdown_nanos < P.KICKDOWN_HOLD_NANOS
 
   def _update_gates(self, now: int, signals: FollowSignals) -> None:
     if not signals.valid:
       self.climb_blocked = True
+      self._rpm_high_since = None
       return
-    if 0 < signals.gear < self._gear_prev or signals.rpm > P.KICKDOWN_RPM:
+    announced = 0 < signals.target_gear < signals.gear
+    if announced or 0 < signals.gear < self._gear_prev or signals.rpm > P.KICKDOWN_RPM:
       self._kickdown_nanos = now
     if signals.gear > 0:
       self._gear_prev = signals.gear
-    self.climb_blocked = signals.gas or self._kicked_down(now)
+    self._rpm_high_since = (self._rpm_high_since or now) if signals.rpm > P.RES_UNDO_RPM else None
+    undone = self._undo_nanos is not None and now - self._undo_nanos < P.RES_HOLD_AFTER_UNDO_NANOS
+    self.climb_blocked = signals.gas or self._kicked_down(now) or undone

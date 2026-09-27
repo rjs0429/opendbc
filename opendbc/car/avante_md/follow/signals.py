@@ -12,11 +12,12 @@ EMS_DCT2 = 0x081
 ESP2 = 0x220
 EMS6 = 0x260
 EMS1 = 0x316
+TCU3 = 0x370
 TCU2 = 0x440
 
 BRAKE_ACT_RELEASED = 1
 
-WATCHED = frozenset((EMS_DCT1, EMS_DCT2, ESP2, EMS6, EMS1, TCU2))
+WATCHED = frozenset((EMS_DCT1, EMS_DCT2, ESP2, EMS6, EMS1, TCU3, TCU2))
 
 
 @dataclass
@@ -27,6 +28,7 @@ class FollowSignals:
   pedal_pct: float = 0.
   rpm: float = 0.
   gear: int = 0
+  target_gear: int = 0
   long_accel: float = 0.
 
 
@@ -58,6 +60,7 @@ class FollowSignalDecoder:
     esp2 = self._raw[ESP2]
     ems6 = self._raw[EMS6]
     ems1 = self._raw[EMS1]
+    tcu3 = self._raw[TCU3]
     tcu2 = self._raw[TCU2]
 
     brake_act = (ems_dct2[0] >> 6) & 0x3
@@ -72,5 +75,6 @@ class FollowSignalDecoder:
       pedal_pct=ems_dct1[0] * 0.3906,
       rpm=(ems1[2] | (ems1[3] << 8)) * 0.25,
       gear=tcu2[1] & 0xF,
+      target_gear=(tcu3[2] >> 4) & 0xF,
       long_accel=(esp2[2] | ((esp2[3] & 0x07) << 8)) * 0.01 - 10.23,
     )
