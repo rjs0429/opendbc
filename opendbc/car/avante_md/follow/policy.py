@@ -3,8 +3,8 @@
 openpilot hands the plan to the car controller as a FollowCommand: the target speed (m/s), the planner's
 acceleration and a request to coast. The ECM set speed is estimated here and moved one tap at a time: CANCEL
 to coast when the lead needs more deceleration than the set speed can give, SET to take the current speed
-back, SET- and RES to trim, and RES only while the powertrain has headroom. A tap the engine did not answer is
-pressed again at once.
+back, SET- and RES to trim, and no RES for a while after a kickdown. A tap the engine did not answer is pressed
+again at once.
 """
 import math
 from dataclasses import dataclass
@@ -51,12 +51,9 @@ class FollowController:
     self._resync = False
     self._down_since: int | None = None
     self._up_since: int | None = None
-    self._gate_clear_since: int | None = None
     self._gear_prev = 0
-    self._downshift_nanos: int | None = None
+    self._kickdown_nanos: int | None = None
     self._downhill_nanos: int | None = None
-    self._last_res_nanos: int | None = None
-    self._res_undone = True
     self._grade_nanos: int | None = None
     self._captured = False
     self._taps_since_commit: list[int] = []
@@ -90,7 +87,7 @@ class FollowController:
     self._lamp_set_prev = lamp_set and cruise.armed
 
     self._update_grade(now, pitch, signals, a_ego)
-    self._update_gates(now, v_cluster, signals)
+    self._update_gates(now, signals)
 
     heard = self.response.update(now, signals, lamp_set)
     if heard is not None:
@@ -126,16 +123,13 @@ class FollowController:
       self._last_tap_dir = cruise.tap_event
       self._last_tap_nanos = now
       self._retry_dir = 0
-      if cruise.tap_event > 0:
-        self._last_res_nanos = now
-        self._res_undone = False
 
   def _steady(self, now: int, lamp_set: bool, signals: FollowSignals) -> bool:
     if self.grade_pct <= SetSpeedParams.STEADY_MIN_GRADE_PCT:
       self._downhill_nanos = now
     recovering = self._downhill_nanos is not None and now - self._downhill_nanos < SetSpeedParams.DOWNHILL_RECOVERY_NANOS
     return (lamp_set and signals.valid and not signals.brake and not signals.gas and not recovering and
-            self.grade_pct < SetSpeedParams.STEADY_MAX_GRADE_PCT and self._downshift_nanos is None)
+            self.grade_pct < SetSpeedParams.STEADY_MAX_GRADE_PCT and not self._kicked_down(now))
 
   def _clear_taps(self) -> None:
     self._down_misses = 0
@@ -163,10 +157,6 @@ class FollowController:
     est = self.estimator
     v_set = est.v_set_likely
     error = plan.v_target_kph - v_set
-
-    if self._res_overshoot(now, error, signals):
-      self._res_undone = True
-      return ButtonRequest.DECEL
 
     if est.needs_resync and v_cluster >= P.RESYNC_MIN_SPEED_KPH:
       self._resync = True
@@ -202,14 +192,6 @@ class FollowController:
       self._up_since = None
       return ButtonRequest.RES
     return ButtonRequest.NONE
-
-  def _res_overshoot(self, now: int, error: float, signals: FollowSignals) -> bool:
-    if self._res_undone or self._last_res_nanos is None or now - self._last_res_nanos > P.RES_UNDO_WINDOW_NANOS:
-      return False
-    if error > -P.TARGET_DEADBAND_KPH:
-      return False
-    kicked_down = self._downshift_nanos is not None and self._downshift_nanos >= self._last_res_nanos
-    return kicked_down or signals.rpm > P.RPM_HARD
 
   def _coast_request(self, now: int, plan: FollowPlan, cruise: CruiseStateMachine, v_cluster: float) -> ButtonRequest:
     self._down_since = self._up_since = None
@@ -249,33 +231,15 @@ class FollowController:
       self.grade_pct += alpha * (raw - self.grade_pct)
     self._grade_nanos = now
 
-  def _update_gates(self, now: int, v_cluster: float, signals: FollowSignals) -> None:
+  def _kicked_down(self, now: int) -> bool:
+    return self._kickdown_nanos is not None and now - self._kickdown_nanos < P.KICKDOWN_HOLD_NANOS
+
+  def _update_gates(self, now: int, signals: FollowSignals) -> None:
     if not signals.valid:
       self.climb_blocked = True
-      self._gate_clear_since = None
       return
-
-    if 0 < signals.gear < self._gear_prev:
-      self._downshift_nanos = now
+    if 0 < signals.gear < self._gear_prev or signals.rpm > P.KICKDOWN_RPM:
+      self._kickdown_nanos = now
     if signals.gear > 0:
       self._gear_prev = signals.gear
-    if self._downshift_nanos is not None and now - self._downshift_nanos >= P.DOWNSHIFT_HOLD_NANOS:
-      self._downshift_nanos = None
-
-    pedal_limit = P.PEDAL_HOLD_HIGH_PCT if v_cluster >= P.PEDAL_HIGH_SPEED_KPH else P.PEDAL_HOLD_PCT
-    slip = abs(signals.rpm - signals.turbine_rpm)
-    blocked = (
-      (0 < signals.target_gear < signals.gear) or
-      self._downshift_nanos is not None or
-      self.grade_pct >= P.UPHILL_GRADE_PCT or
-      signals.pedal_pct >= pedal_limit or
-      signals.rpm > P.RPM_SOFT or
-      (v_cluster >= P.LOCKUP_CHECK_MIN_KPH and slip >= P.LOCKUP_SLIP_RPM) or
-      signals.gas
-    )
-
-    if blocked:
-      self._gate_clear_since = None
-    elif self._gate_clear_since is None:
-      self._gate_clear_since = now
-    self.climb_blocked = self._gate_clear_since is None or now - self._gate_clear_since < P.GATE_CLEAR_NANOS
+    self.climb_blocked = signals.gas or self._kicked_down(now)

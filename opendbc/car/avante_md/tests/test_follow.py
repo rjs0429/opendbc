@@ -24,8 +24,7 @@ def some(x: float | None) -> float:
 
 
 def normal_signals(**kwargs) -> FollowSignals:
-  sig = FollowSignals(valid=True, rpm=1400., turbine_rpm=1400., gear=6, target_gear=6, pedal_pct=20.,
-                      long_accel=FollowParams.LONG_ACCEL_BIAS)
+  sig = FollowSignals(valid=True, rpm=1400., gear=6, pedal_pct=20., long_accel=FollowParams.LONG_ACCEL_BIAS)
   for k, v in kwargs.items():
     setattr(sig, k, v)
   return sig
@@ -264,17 +263,14 @@ class TestFollowSignals(unittest.TestCase):
     self.packer = CANPacker(AVANTE_MD_DBC)
     self.decoder = FollowSignalDecoder()
 
-  def _feed(self, nanos, brake_act=1, cyl_pres=1.0, acl=0, pedal=25., rpm=2100., ntc=2080., gear=6, target_gear=6,
-            long_accel=0.3, range_=5):
+  def _feed(self, nanos, brake_act=1, cyl_pres=1.0, acl=0, pedal=25., rpm=2100., gear=6, long_accel=0.3):
     frames = [
       self.packer.make_can_msg("EMS_DCT1", 0, {"PV_AV_CAN": pedal}),
       self.packer.make_can_msg("EMS_DCT2", 0, {"BRAKE_ACT": brake_act}),
       self.packer.make_can_msg("ESP2", 0, {"CYL_PRES": cyl_pres, "LONG_ACCEL": long_accel}),
       self.packer.make_can_msg("EMS6", 0, {"CF_Ems_AclAct": acl}),
       self.packer.make_can_msg("EMS1", 0, {"N": rpm}),
-      self.packer.make_can_msg("TCU3", 0, {"CF_Tcu_TarGr": target_gear}),
-      self.packer.make_can_msg("TCU1", 0, {"CUR_GR": range_}),
-      self.packer.make_can_msg("TCU2", 0, {"CUR_GR": gear, "N_TC_RAW": ntc}),
+      self.packer.make_can_msg("TCU2", 0, {"CUR_GR": gear}),
     ]
     for addr, dat, _ in frames:
       self.decoder.update_frame(addr, dat, nanos)
@@ -287,13 +283,8 @@ class TestFollowSignals(unittest.TestCase):
     self.assertFalse(sig.gas)
     self.assertAlmostEqual(25., sig.pedal_pct, delta=0.4)
     self.assertAlmostEqual(2100., sig.rpm)
-    self.assertAlmostEqual(2080., sig.turbine_rpm)
     self.assertEqual(6, sig.gear)
-    self.assertEqual(6, sig.target_gear)
-    self.assertFalse(sig.sport)
     self.assertAlmostEqual(0.3, sig.long_accel, places=2)
-    self._feed(0, range_=8)
-    self.assertTrue(self.decoder.decode(0).sport)
 
   def test_brake_from_switch_or_pressure(self):
     for brake_act, cyl_pres, expected in ((2, 1.0, True), (0, 1.0, True), (1, 3.0, True), (1, 1.0, False)):
@@ -635,12 +626,8 @@ class TestFollow(unittest.TestCase):
 
   def test_climb_gates(self):
     cases = {
-      "downshift pending": dict(target_gear=5),
-      "overrev": dict(rpm=FollowParams.RPM_SOFT + 200., turbine_rpm=FollowParams.RPM_SOFT + 200.),
-      "pedal headroom": dict(pedal_pct=FollowParams.PEDAL_HOLD_PCT + 1.),
-      "lockup slip": dict(turbine_rpm=1300.),
+      "overrev": dict(rpm=FollowParams.KICKDOWN_RPM + 200.),
       "driver gas": dict(gas=True),
-      "uphill": dict(long_accel=FollowParams.LONG_ACCEL_BIAS + 0.35),
     }
     for name, override in cases.items():
       with self.subTest(name):
@@ -655,9 +642,18 @@ class TestFollow(unittest.TestCase):
         sim.run(30 * SECOND)
         self.assertNotIn(ButtonRequest.RES, sim.requests)
 
+  def test_climb_goes_on_uphill_and_at_full_demand(self):
+    sim = Sim(FakeEcm(v_kph=80.), FollowPlan(True, 80., 0., False))
+    sim.engage()
+    sim.signals = normal_signals(long_accel=FollowParams.LONG_ACCEL_BIAS + 0.5)
+    sim.pedal_base = 45.
+    sim.follow.v_user_kph = 90.
+    sim.plan = FollowPlan(True, 90., 0.3, False)
+    sim.run(10 * SECOND)
+    self.assertIn(ButtonRequest.RES, sim.requests)
+
   def test_climb_allowed_below_top_gear(self):
-    for v_kph, signals in ((55., dict(gear=5, target_gear=5, rpm=2200., turbine_rpm=2200.)),
-                           (80., dict(gear=5, target_gear=5, sport=True))):
+    for v_kph, signals in ((55., dict(gear=5, rpm=2200.)), (80., dict(gear=5))):
       with self.subTest(v_kph=v_kph):
         sim = Sim(FakeEcm(v_kph=v_kph), FollowPlan(True, v_kph, 0., False))
         sim.engage()
@@ -684,7 +680,7 @@ class TestFollow(unittest.TestCase):
     sim.signals.gear = 5
     sim.step()
     sim.plan = FollowPlan(True, 90., 0.3, False)
-    sim.run(FollowParams.DOWNSHIFT_HOLD_NANOS - SECOND)
+    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
     self.assertNotIn(ButtonRequest.RES, sim.requests)
 
   def _res_then(self, **after) -> 'Sim':
@@ -698,21 +694,22 @@ class TestFollow(unittest.TestCase):
       setattr(sim.signals, k, v)
     return sim
 
-  def test_kickdown_after_res_is_undone_once(self):
+  def test_kickdown_after_res_holds_the_next_res(self):
     sim = self._res_then(gear=5)
-    sim.plan = FollowPlan(True, 80., 0., False)
-    sim.run(3 * SECOND)
-    self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
+    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
+    self.assertEqual(1, sim.requests.count(ButtonRequest.RES))
+    sim.run(5 * SECOND)
+    self.assertGreater(sim.requests.count(ButtonRequest.RES), 1)
+    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
 
-  def test_rpm_spike_after_res_is_undone_once(self):
-    sim = self._res_then(rpm=FollowParams.RPM_HARD + 100.)
-    sim.plan = FollowPlan(True, 80., 0., False)
-    sim.run(3 * SECOND)
-    self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
-
-  def test_kickdown_that_did_not_overshoot_is_kept(self):
-    sim = self._res_then(gear=5)
-    sim.run(3 * SECOND)
+  def test_overrev_holds_the_next_res_until_it_has_passed(self):
+    sim = self._res_then(rpm=FollowParams.KICKDOWN_RPM + 200.)
+    sim.run(SECOND // 2)
+    sim.signals.rpm = 1400.
+    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
+    self.assertEqual(1, sim.requests.count(ButtonRequest.RES))
+    sim.run(5 * SECOND)
+    self.assertGreater(sim.requests.count(ButtonRequest.RES), 1)
     self.assertNotIn(ButtonRequest.DECEL, sim.requests)
 
   def test_brake_switches_main_off_and_disarms(self):

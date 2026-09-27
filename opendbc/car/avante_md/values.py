@@ -101,23 +101,10 @@ class FollowParams:
   RECAPTURE_RETRY_NANOS = 1_500_000_000
   RESYNC_SET_DELAY_NANOS = 300_000_000
 
-  # Climb is held while any of these is true, and for GATE_CLEAR_NANOS after the last one clears.
-  GATE_CLEAR_NANOS = 1_000_000_000
-  DOWNSHIFT_HOLD_NANOS = 5_000_000_000
-  UPHILL_GRADE_PCT = 3.0
-  # Engine demand saturates near 47%, and the downshifts measured on the road start above 34%. Holding
-  # the climb below that would hold it through ordinary cruising, which reads 20-40%.
-  PEDAL_HOLD_PCT = 44.
-  PEDAL_HOLD_HIGH_PCT = 46.
-  PEDAL_HIGH_SPEED_KPH = 100.
-  # The car cruises the highway in 5th as often as in 6th, around 2800 rpm, so only a genuine overrev
-  # holds the climb.
-  RPM_SOFT = 3000.
-  LOCKUP_CHECK_MIN_KPH = 80.
-  LOCKUP_SLIP_RPM = 60.
-  # A RES that overshot the target and ended in a kickdown or overrev is taken back with one SET- tap.
-  RPM_HARD = 3500.
-  RES_UNDO_WINDOW_NANOS = 10_000_000_000
+  # A kickdown, seen as a downshift or an overrev, holds the next RES for this long after it.
+  KICKDOWN_HOLD_NANOS = 5_000_000_000
+  # The car cruises the highway in 5th as often as in 6th, around 2800 rpm, so only a genuine overrev counts.
+  KICKDOWN_RPM = 3000.
   # Turning back within this time after a tap needs the target half a step further off.
   REVERSAL_NANOS = 20_000_000_000
   REVERSAL_EXTRA_KPH = TAP_STEP_KPH / 2
