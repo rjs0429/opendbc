@@ -134,6 +134,21 @@ class TestCruiseStateMachine(unittest.TestCase):
     self.assertTrue(sim.ecm.set)
     self.assertFalse(sim.sm.transmitting)
 
+  def test_long_press_does_not_engage_when_engaging_is_off(self):
+    sim = Sim()
+    sim.sm.allow_engage = False
+    self.assertEqual(CruiseState.IDLE, sim.engage())
+    self.assertFalse(sim.ecm.main)
+    self.assertFalse(sim.sm.transmitting)
+
+  def test_engaged_cruise_still_switches_off_when_engaging_is_off(self):
+    sim = Sim()
+    sim.engage()
+    sim.sm.allow_engage = False
+    sim.step(long_press=True)
+    self.assertEqual(CruiseState.IDLE, sim.run(5 * LAMP_LATENCY))
+    self.assertFalse(sim.ecm.main)
+
   def test_long_press_while_active_returns_to_idle(self):
     sim = Sim()
     sim.engage()

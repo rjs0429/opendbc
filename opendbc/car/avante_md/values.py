@@ -67,7 +67,8 @@ class CruiseParams:
 
 
 class FollowParams:
-  """Lead following on top of the stock cruise, planned by openpilot and executed with button taps.
+  """Gap assist on top of the stock cruise: openpilot plans, button taps only ever lower the set speed, and the
+  driver's pedal raises it.
 
   Set speeds are on the cluster scale, because that is what the driver reads and what SET captures.
   """
@@ -93,7 +94,6 @@ class FollowParams:
 
   TARGET_DEADBAND_KPH = 1.5
   TARGET_HOLD_NANOS = 1_500_000_000
-  CLIMB_MIN_ACCEL = 0.0
 
   RECAPTURE_DELAY_NANOS = 1_500_000_000
   RECAPTURE_MIN_ACCEL = -0.05
@@ -101,20 +101,23 @@ class FollowParams:
   RECAPTURE_RETRY_NANOS = 1_500_000_000
   RESYNC_SET_DELAY_NANOS = 300_000_000
 
-  # A kickdown holds the next RES for this long after it: a downshift the transmission announces or makes, or an
-  # overrev above ordinary fifth-gear cruising.
+  # For this long after a downshift the transmission announces or makes, or an overrev above ordinary fifth-gear
+  # cruising, the speed says nothing about the set speed.
   KICKDOWN_HOLD_NANOS = 5_000_000_000
   KICKDOWN_RPM = 3300.
-  # A RES answered by a two-gear kickdown or a lasting overrev is taken back with one SET-, and the climb then waits
-  # longer so the same hill does not repeat it.
-  RES_UNDO_WINDOW_NANOS = 10_000_000_000
-  RES_UNDO_GEARS = 2
-  RES_UNDO_RPM = 3500.
-  RES_UNDO_RPM_NANOS = 300_000_000
-  RES_HOLD_AFTER_UNDO_NANOS = 20_000_000_000
-  # Turning back within this time after a tap needs the target half a step further off.
-  REVERSAL_NANOS = 20_000_000_000
-  REVERSAL_EXTRA_KPH = TAP_STEP_KPH / 2
+
+  # The speed the driver's pedal reaches becomes the set speed, never above the speed the driver engaged at. A RES
+  # would do the same job but the ECM answers it with a kickdown, so the set speed is taken again with CANCEL, SET.
+  # A press shorter than CAPTURE_PEDAL_NANOS is a nudge, not a new speed.
+  CAPTURE_PEDAL_NANOS = 1_000_000_000
+  CAPTURE_MIN_GAIN_KPH = 1.5
+  # Taken while the pedal is still down once the car gets this close to the engaged speed.
+  CAPTURE_USER_MARGIN_KPH = 0.5
+  # The plan has to accept the speed: a lead too close for it leaves the old set speed to slow the car.
+  CAPTURE_PLAN_MARGIN_KPH = 1.0
+  # A speed set under the pedal and lost before the release is taken again at the release speed: the ECM regains
+  # lost speed with a kickdown.
+  CAPTURE_MIN_LOSS_KPH = 1.0
 
   # ESP2 longitudinal acceleration minus the wheel-speed derivative reads grade with a small positive bias.
   LONG_ACCEL_BIAS = 0.03

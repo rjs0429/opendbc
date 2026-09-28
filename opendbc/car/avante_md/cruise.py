@@ -1,7 +1,7 @@
 from collections import deque
 from enum import IntEnum
 
-from opendbc.car.avante_md.avantecan import CLU1_SW_CANCEL, CLU1_SW_NONE, CLU1_SW_RES, CLU1_SW_SET
+from opendbc.car.avante_md.avantecan import CLU1_SW_CANCEL, CLU1_SW_NONE, CLU1_SW_SET
 from opendbc.car.avante_md.values import CruiseParams, FollowParams
 
 
@@ -23,7 +23,6 @@ class ButtonRequest(IntEnum):
   NONE = 0
   CANCEL = 1
   SET = 2
-  RES = 3
   DECEL = 4
 
 
@@ -32,8 +31,8 @@ class CruiseStateMachine:
 
   The ECM cruise lamps are the only state that is trusted: CruiseSwMain is an edge toggle, so an
   open-loop press would turn cruise off just as readily as on. MAIN, SET and CANCEL presses run until
-  their lamp confirms them. RES and SET- taps cannot be confirmed by a lamp, so they are single short
-  taps whose effect the caller verifies from the speed.
+  their lamp confirms them. A SET- tap cannot be confirmed by a lamp, so it is a single short tap whose
+  effect the caller verifies from the speed. RES is never pressed.
 
   Once a driver engagement reaches ACTIVE the machine is armed: the follow logic may cancel into COAST and
   set again later. The session ends, and MAIN is switched off, on a brake, the driver's long press or a
@@ -46,6 +45,8 @@ class CruiseStateMachine:
     self.sw_state = CLU1_SW_NONE
     self.sw_main = 0
     self.armed = False
+    # Off, the long press no longer engages; an engaged cruise can still be switched off.
+    self.allow_engage = True
     self.cancel_unsupported = False
     self.tap_event: int | None = None
     self.set_rejected_nanos: int | None = None
@@ -58,8 +59,6 @@ class CruiseStateMachine:
     self._set_attempts = 0
     self._cancel_attempts = 0
     self._ready_since: int | None = None
-    self._tap_button = CLU1_SW_NONE
-    self._tap_dir = 0
     self._tap_released = False
     self._engaging = False
     self._recapture = False
@@ -176,7 +175,7 @@ class CruiseStateMachine:
         self._goto(CruiseState.IDLE, now)
 
     elif self.state == CruiseState.IDLE:
-      if long_press:
+      if long_press and self.allow_engage:
         self._goto(CruiseState.PRESS_MAIN_ON, now)
         self._engaging = True
         self._main_attempts = 0
@@ -243,12 +242,10 @@ class CruiseStateMachine:
         self._on_set_lamp_lost(now, follow_active)
       elif request == ButtonRequest.CANCEL:
         self._start_cancel(now)
-      elif request in (ButtonRequest.RES, ButtonRequest.DECEL):
+      elif request == ButtonRequest.DECEL:
         self._goto(CruiseState.TAP, now)
-        self._tap_button = CLU1_SW_RES if request == ButtonRequest.RES else CLU1_SW_SET
-        self._tap_dir = 1 if request == ButtonRequest.RES else -1
         self._tap_released = False
-        self.sw_state = self._tap_button
+        self.sw_state = CLU1_SW_SET
 
     elif self.state == CruiseState.TAP:
       if long_press:
@@ -256,12 +253,12 @@ class CruiseStateMachine:
       elif not lamp_set:
         self._goto(CruiseState.ACTIVE, now)
       elif now - self._entered < CruiseParams.TAP_NANOS:
-        self.sw_state = self._tap_button
+        self.sw_state = CLU1_SW_SET
       else:
         self.sw_state = CLU1_SW_NONE
         if not self._tap_released:
           self._tap_released = True
-          self.tap_event = self._tap_dir
+          self.tap_event = -1
         if now - self._entered >= CruiseParams.TAP_NANOS + CruiseParams.TAP_GAP_NANOS:
           self._goto(CruiseState.ACTIVE, now)
 

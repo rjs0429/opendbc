@@ -28,6 +28,14 @@ class CarController(CarControllerBase):
     """Plan for the next update only; without a fresh command each cycle the car does not follow."""
     self.follow_command = cmd
 
+  def set_cruise_enabled(self, enabled: bool) -> None:
+    """Whether the ECO switch long press may engage the stock cruise."""
+    self.cruise.allow_engage = enabled
+
+  def cruise_display_kph(self) -> float | None:
+    """The estimated ECM set speed on the cluster scale, while cruise is engaged."""
+    return self.follow.v_set_display_kph if self.cruise.engaged else None
+
   def update(self, CC, CS, now_nanos):
     can_sends = []
     CS.openpilot_enabled = CC.enabled

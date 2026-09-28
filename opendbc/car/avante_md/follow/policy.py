@@ -1,10 +1,10 @@
 """Turns openpilot's follow plan into stock cruise button requests.
 
 openpilot hands the plan to the car controller as a FollowCommand: the target speed (m/s), the planner's
-acceleration and a request to coast. The ECM set speed is estimated here and moved one tap at a time: CANCEL
-to coast when the lead needs more deceleration than the set speed can give, SET to take the current speed
-back, SET- and RES to trim, and no RES for a while after a kickdown. A RES that set off a hard kickdown is taken back.
-A tap the engine did not answer is pressed again at once.
+acceleration and a request to coast. The ECM set speed is estimated here and the buttons only ever lower it: SET-
+trims it one tap at a time, CANCEL coasts when the lead needs more deceleration than the set speed can give, and SET
+takes the current speed back. Speeding up is the driver's: once the pedal lets the car reach a new speed, CANCEL and
+SET make it the set speed, up to the speed the driver engaged at. A tap the engine did not answer is pressed again at once.
 """
 import math
 from dataclasses import dataclass
@@ -46,11 +46,9 @@ class FollowController:
     self.response = TapResponse()
     self.v_user_kph: float | None = None
     self.grade_pct = 0.
-    self.climb_blocked = False
     self._lamp_set_prev = False
     self._resync = False
     self._down_since: int | None = None
-    self._up_since: int | None = None
     self._gear_prev = 0
     self._kickdown_nanos: int | None = None
     self._downhill_nanos: int | None = None
@@ -59,63 +57,66 @@ class FollowController:
     self._taps_since_commit: list[int] = []
     self._down_misses = 0
     self._down_paused_nanos: int | None = None
-    self._last_tap_dir = 0
-    self._last_tap_nanos: int | None = None
-    self._retry_dir = 0
+    self._retry = False
     self._quick_retries = 0
-    self._rpm_high_since: int | None = None
-    self._res_nanos: int | None = None
-    self._res_gear = 0
-    self._res_missed = False
-    self._undo_nanos: int | None = None
+    self._pedal_since: int | None = None
+    self._pedal_captured = False
+    self._captured_under_pedal = False
 
   @property
   def v_set_kph(self) -> float | None:
     return self.estimator.v_set if self.estimator.valid else None
 
+  @property
+  def v_set_display_kph(self) -> float | None:
+    """The set speed to show the driver: taps count as soon as they are sent."""
+    return self.estimator.v_set_likely if self.estimator.valid else None
+
   def update(self, now: int, plan: FollowPlan, cruise: CruiseStateMachine, lamp_set: bool, v_cluster: float,
              v_wheel: float, a_ego: float, signals: FollowSignals, pitch: float | None = None) -> ButtonRequest:
     """Runs before the button machine and returns what it should press next."""
+    pedal = signals.valid and signals.gas
     if not cruise.armed:
       self.estimator.reset()
       self.response.reset()
       self.v_user_kph = None
       self._resync = False
       self._captured = False
+      self._captured_under_pedal = False
       self._clear_taps()
     elif lamp_set and not self._lamp_set_prev:
       self.estimator.capture(now, v_cluster)
       self._captured = True
+      self._captured_under_pedal = pedal
       self._clear_taps()
       if self.v_user_kph is None:
         self.v_user_kph = v_cluster
     self._lamp_set_prev = lamp_set and cruise.armed
 
     self._update_grade(now, pitch, signals, a_ego)
-    self._update_gates(now, signals)
+    self._update_kickdown(now, signals)
+    released = self._update_pedal(now, pedal)
 
     heard = self.response.update(now, signals, lamp_set)
     if heard is not None:
       self.estimator.answer(heard)
-      retry = not heard and self._quick_retries < P.QUICK_RETRY_LIMIT
-      self._retry_dir = self._last_tap_dir if retry else 0
-      self._quick_retries = self._quick_retries + 1 if retry else 0
-      self._res_missed = self._res_missed or (not heard and self._last_tap_dir > 0)
+      self._retry = not heard and self._quick_retries < P.QUICK_RETRY_LIMIT
+      self._quick_retries = self._quick_retries + 1 if self._retry else 0
     self.estimator.update(now, v_cluster, v_wheel * CV.MS_TO_KPH, self._steady(now, lamp_set, signals))
     self._count_down_misses(now)
 
     if not (cruise.armed and plan.valid):
-      self._down_since = self._up_since = None
+      self._down_since = None
       return ButtonRequest.NONE
     # Coasting only lowers output, so it does not wait for the powertrain signals.
     if cruise.state == CruiseState.ACTIVE and plan.coast:
       return ButtonRequest.CANCEL
     if not signals.valid:
-      self._down_since = self._up_since = None
+      self._down_since = None
       return ButtonRequest.NONE
 
     if cruise.state == CruiseState.ACTIVE:
-      return self._active_request(now, plan, v_cluster, signals)
+      return self._active_request(now, plan, v_cluster, pedal, released)
     if cruise.state == CruiseState.COAST:
       return self._coast_request(now, plan, cruise, v_cluster)
     return ButtonRequest.NONE
@@ -126,13 +127,7 @@ class FollowController:
       self.estimator.tap(now, cruise.tap_event)
       self.response.start(now - CruiseParams.TAP_NANOS, cruise.tap_event)
       self._taps_since_commit.append(cruise.tap_event)
-      self._last_tap_dir = cruise.tap_event
-      self._last_tap_nanos = now
-      self._retry_dir = 0
-      if cruise.tap_event > 0:
-        self._res_nanos = now
-        self._res_gear = self._gear_prev
-        self._res_missed = False
+      self._retry = False
 
   def _steady(self, now: int, lamp_set: bool, signals: FollowSignals) -> bool:
     if self.grade_pct <= SetSpeedParams.STEADY_MIN_GRADE_PCT:
@@ -145,11 +140,8 @@ class FollowController:
     self._down_misses = 0
     self._down_paused_nanos = None
     self._taps_since_commit.clear()
-    self._last_tap_nanos = None
-    self._retry_dir = 0
+    self._retry = False
     self._quick_retries = 0
-    self._res_nanos = None
-    self._undo_nanos = None
 
   def _count_down_misses(self, now: int) -> None:
     if self._down_paused_nanos is not None and now - self._down_paused_nanos >= P.TAP_DOWN_PAUSE_NANOS:
@@ -158,60 +150,77 @@ class FollowController:
     steps = self.estimator.last_commit_steps
     if steps is None:
       return
-    if self._taps_since_commit and all(d < 0 for d in self._taps_since_commit):
+    if self._taps_since_commit:
       self._down_misses = self._down_misses + 1 if steps == 0 else 0
       if self._down_misses >= P.TAP_DOWN_MISS_LIMIT and self._down_paused_nanos is None:
         self._down_paused_nanos = now
     self._taps_since_commit.clear()
     self.estimator.last_commit_steps = None
 
-  def _active_request(self, now: int, plan: FollowPlan, v_cluster: float, signals: FollowSignals) -> ButtonRequest:
+  def _update_pedal(self, now: int, pedal: bool) -> bool:
+    """Whether the driver has just let go of a press long enough to have set a new speed."""
+    if pedal:
+      if self._pedal_since is None:
+        self._pedal_since = now
+        self._pedal_captured = False
+      return False
+    released = self._pedal_since is not None and now - self._pedal_since >= P.CAPTURE_PEDAL_NANOS
+    self._pedal_since = None
+    return released
+
+  def _capture_wanted(self, plan: FollowPlan, v_cluster: float, v_set: float, pedal: bool, released: bool) -> bool:
+    if self.v_user_kph is None or v_cluster < P.RESYNC_MIN_SPEED_KPH:
+      return False
+    plan_ok = plan.v_target_kph >= v_cluster - P.CAPTURE_PLAN_MARGIN_KPH
+    if pedal:
+      reached = v_cluster >= self.v_user_kph - P.CAPTURE_USER_MARGIN_KPH
+      below = v_set < self.v_user_kph - P.TARGET_DEADBAND_KPH
+      if reached and below and plan_ok and not self._pedal_captured:
+        self._pedal_captured = True
+        return True
+      return False
+    if not released:
+      return False
+    under_pedal, self._captured_under_pedal = self._captured_under_pedal, False
+    if v_cluster > self.v_user_kph + P.TARGET_DEADBAND_KPH:
+      return False
+    if v_cluster >= v_set + P.CAPTURE_MIN_GAIN_KPH:
+      return plan_ok
+    return under_pedal and v_cluster <= v_set - P.CAPTURE_MIN_LOSS_KPH
+
+  def _active_request(self, now: int, plan: FollowPlan, v_cluster: float, pedal: bool, released: bool) -> ButtonRequest:
     est = self.estimator
     v_set = est.v_set_likely
     error = plan.v_target_kph - v_set
 
-    if self._res_overshoot(now, v_set, signals):
-      self._res_nanos = None
-      self._undo_nanos = now
-      return ButtonRequest.DECEL
-
     if est.needs_resync and v_cluster >= P.RESYNC_MIN_SPEED_KPH:
       self._resync = True
       return ButtonRequest.CANCEL
+    if est.valid and self._captured and self._capture_wanted(plan, v_cluster, v_set, pedal, released):
+      self._resync = True
+      return ButtonRequest.CANCEL
     # A tap waits until the engine's answer is in and the estimator has resolved it, unless the set speed is
-    # already several steps off.
-    far = abs(error) >= P.PENDING_OVERRIDE_STEPS * P.TAP_STEP_KPH
+    # already several steps off. Nothing is tapped while the driver's pedal decides the speed.
+    far = error <= -P.PENDING_OVERRIDE_STEPS * P.TAP_STEP_KPH
     burst = far and len(self._taps_since_commit) < P.PENDING_BURST_TAPS
-    if (not est.valid or est.needs_resync or not self._captured or self.response.busy or
+    if (pedal or not est.valid or est.needs_resync or not self._captured or self.response.busy or
         (est.pending and not burst)):
-      self._down_since = self._up_since = None
+      self._down_since = None
       return ButtonRequest.NONE
 
-    recent = self._last_tap_nanos is not None and now - self._last_tap_nanos < P.REVERSAL_NANOS
-    down_band = P.TARGET_DEADBAND_KPH + (P.REVERSAL_EXTRA_KPH if recent and self._last_tap_dir > 0 else 0.)
-    up_band = P.TARGET_DEADBAND_KPH + (P.REVERSAL_EXTRA_KPH if recent and self._last_tap_dir < 0 else 0.)
-    down = (error <= -down_band and v_set - P.TAP_STEP_KPH >= max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH) and
+    down = (error <= -P.TARGET_DEADBAND_KPH and v_set - P.TAP_STEP_KPH >= max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH) and
             self._down_paused_nanos is None)
-    up = (error >= up_band and plan.a_target >= P.CLIMB_MIN_ACCEL and
-          self.v_user_kph is not None and v_set + P.TAP_STEP_KPH <= self.v_user_kph + P.TARGET_DEADBAND_KPH)
-
     self._down_since = (self._down_since or now) if down else None
-    self._up_since = (self._up_since or now) if up else None
-    if not (down if self._retry_dir < 0 else up and not self.climb_blocked):
-      self._retry_dir = 0
-    down_hold = 0 if self._retry_dir < 0 else P.TARGET_HOLD_NANOS
-    up_hold = 0 if self._retry_dir > 0 else P.TARGET_HOLD_NANOS
-
-    if self._down_since is not None and now - self._down_since >= down_hold:
+    if not down:
+      self._retry = False
+    hold = 0 if self._retry else P.TARGET_HOLD_NANOS
+    if self._down_since is not None and now - self._down_since >= hold:
       self._down_since = None
       return ButtonRequest.DECEL
-    if self._up_since is not None and now - self._up_since >= up_hold and not self.climb_blocked:
-      self._up_since = None
-      return ButtonRequest.RES
     return ButtonRequest.NONE
 
   def _coast_request(self, now: int, plan: FollowPlan, cruise: CruiseStateMachine, v_cluster: float) -> ButtonRequest:
-    self._down_since = self._up_since = None
+    self._down_since = None
     if plan.coast:
       self._resync = False
       return ButtonRequest.NONE
@@ -248,28 +257,14 @@ class FollowController:
       self.grade_pct += alpha * (raw - self.grade_pct)
     self._grade_nanos = now
 
-  def _res_overshoot(self, now: int, v_set: float, signals: FollowSignals) -> bool:
-    if self._res_nanos is None or self._res_missed or now - self._res_nanos > P.RES_UNDO_WINDOW_NANOS:
-      return False
-    if v_set - P.TAP_STEP_KPH < max(P.MIN_SPEED_KPH, P.TAP_DOWN_MIN_KPH):
-      return False
-    lowest = min((g for g in (signals.gear, signals.target_gear) if g > 0), default=self._res_gear)
-    overrev = self._rpm_high_since is not None and now - self._rpm_high_since >= P.RES_UNDO_RPM_NANOS
-    return self._res_gear - lowest >= P.RES_UNDO_GEARS or overrev
-
   def _kicked_down(self, now: int) -> bool:
     return self._kickdown_nanos is not None and now - self._kickdown_nanos < P.KICKDOWN_HOLD_NANOS
 
-  def _update_gates(self, now: int, signals: FollowSignals) -> None:
+  def _update_kickdown(self, now: int, signals: FollowSignals) -> None:
     if not signals.valid:
-      self.climb_blocked = True
-      self._rpm_high_since = None
       return
     announced = 0 < signals.target_gear < signals.gear
     if announced or 0 < signals.gear < self._gear_prev or signals.rpm > P.KICKDOWN_RPM:
       self._kickdown_nanos = now
     if signals.gear > 0:
       self._gear_prev = signals.gear
-    self._rpm_high_since = (self._rpm_high_since or now) if signals.rpm > P.RES_UNDO_RPM else None
-    undone = self._undo_nanos is not None and now - self._undo_nanos < P.RES_HOLD_AFTER_UNDO_NANOS
-    self.climb_blocked = signals.gas or self._kicked_down(now) or undone

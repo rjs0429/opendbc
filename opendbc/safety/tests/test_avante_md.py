@@ -257,19 +257,12 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
     dat[7] = 0x33
     return bytearray(dat)
 
-  @staticmethod
-  def _ems6_msg(set_lamp):
-    dat = bytearray(8)
-    dat[3] = 0x06 if set_lamp else 0x02
-    return common.make_msg(0, 0x260, 8, bytes(dat))
-
   def _cruise_rx(self, speed_ms=16.7, gear_drive=True, door_open=False, seatbelt_unlatched=False,
-                 dt_us=20_000, set_lamp=False):
+                 dt_us=20_000):
     """Advance time, refresh the messages the cruise gate reads, return the genuine CLU1."""
     self._refresh_prereqs_on_tx = False
     self._auto_tx_time_us += dt_us
     self.safety.set_timer(self._auto_tx_time_us)
-    self.safety.safety_rx_hook(self._ems6_msg(set_lamp))
 
     for _ in range(6):
       self.safety.safety_rx_hook(self._tcs5_msg(speed_kph=speed_ms))
@@ -331,47 +324,26 @@ class TestAvanteMdSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafety
   def test_cruise_rejects_undefined_buttons(self):
     for sw_state in (3, 5, 6, 7):
       with self.subTest(sw_state=sw_state):
-        self.assertFalse(self._cruise_tx(sw_state=sw_state, set_lamp=True))
+        self.assertFalse(self._cruise_tx(sw_state=sw_state))
+
+  def test_cruise_res_never_allowed(self):
+    for kwargs in ({}, {'speed_ms': 10.0}, {'speed_ms': 36.0}):
+      with self.subTest(**kwargs):
+        self.assertFalse(self._cruise_tx(sw_state=1, **kwargs))
 
   def test_cruise_cancel_allowed_in_any_state(self):
     self.assertTrue(self._cruise_tx(sw_state=4, speed_ms=0.0, gear_drive=False, door_open=True))
 
-  def test_cruise_res_allowed_while_engaged(self):
-    self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-
-  def test_cruise_res_blocked_unless_engaged(self):
-    self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=False))
-
-  def test_cruise_res_blocked_when_the_lamp_is_stale(self):
-    payload = self._cruise_rx(set_lamp=True)
-    self._auto_tx_time_us += 110_000
-    self.safety.set_timer(self._auto_tx_time_us)
-    for _ in range(6):
-      self.safety.safety_rx_hook(self._tcs5_msg(speed_kph=16.7))
-    self.safety.safety_rx_hook(self._tcu1_msg(gear_disp=5))
-    self.safety.safety_rx_hook(self._tcu2_msg(gear=1))
-    self.safety.safety_rx_hook(self._clu2_msg())
-    payload = self._clu1_payload()
-    self.safety.safety_rx_hook(common.make_msg(0, 0x4F0, 8, bytes(payload)))
-    self.assertFalse(self._tx(self._clu1_tx_msg(payload, sw_state=1)))
-
-  def test_cruise_res_allowed_across_the_set_speed_range(self):
+  def test_cruise_set_allowed_across_its_speed_range(self):
     for speed_ms in (10.0, 36.0):
       with self.subTest(speed_ms=speed_ms):
-        self.assertTrue(self._cruise_tx(sw_state=1, speed_ms=speed_ms, set_lamp=True))
+        self.assertTrue(self._cruise_tx(sw_state=2, speed_ms=speed_ms))
 
-  def test_cruise_res_blocked_where_set_is(self):
+  def test_cruise_set_blocked_without_its_conditions(self):
     for kwargs in ({'speed_ms': 9.0}, {'speed_ms': 37.0}, {'gear_drive': False}, {'door_open': True},
                    {'seatbelt_unlatched': True}):
       with self.subTest(**kwargs):
         self.assertFalse(self._cruise_tx(sw_state=2, **kwargs))
-        self.assertFalse(self._cruise_tx(sw_state=1, set_lamp=True, **kwargs))
-
-  def test_cruise_res_held_and_repeated_like_set(self):
-    for _ in range(50):  # 1 s held
-      self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
-    self.assertTrue(self._cruise_tx(set_lamp=True))
-    self.assertTrue(self._cruise_tx(sw_state=1, set_lamp=True))
 
   def test_cruise_set_blocked_outside_speed_range(self):
     for speed_ms in (9.0, 37.0):

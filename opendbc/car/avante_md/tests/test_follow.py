@@ -2,7 +2,7 @@
 import unittest
 
 from opendbc.can import CANPacker
-from opendbc.car.avante_md.avantecan import CLU1_SW_CANCEL, CLU1_SW_RES, CLU1_SW_SET
+from opendbc.car.avante_md.avantecan import CLU1_SW_CANCEL, CLU1_SW_SET
 from opendbc.car.avante_md.cruise import ButtonRequest, CruiseState, CruiseStateMachine
 from opendbc.car.avante_md.follow.command import FollowCommand
 from opendbc.car.avante_md.follow.estimator import SetSpeedEstimator
@@ -316,9 +316,9 @@ class TestFollowSignals(unittest.TestCase):
 
 
 class FakeEcm:
-  """Stock cruise as measured: MAIN is an edge toggle, SET engages at the current speed, a short RES or SET
-  tap moves the set speed one step on release, CANCEL drops SET but keeps MAIN. The car holds the set speed
-  while engaged; once cruise lets go of it the car coasts, until the driver's foot is back."""
+  """Stock cruise as measured: MAIN is an edge toggle, SET engages at the current speed, a short SET tap lowers the
+  set speed one step on release, CANCEL drops SET but keeps MAIN. The car holds the set speed while engaged; once
+  cruise lets go of it the car coasts. The driver's pedal overrides both at `pedal` km/h per second."""
   LATENCY = 60_000_000
   HOLD = 500_000_000
 
@@ -332,6 +332,7 @@ class FakeEcm:
     self.hear_taps = True
     self.deaf = False
     self.coasting = False
+    self.pedal: float | None = None
     self._main_since: int | None = None
     self._main_done = False
     self._button = 0
@@ -356,9 +357,9 @@ class FakeEcm:
 
     if sw_state != self._button:
       held = now - self._since
-      if (self._button in (CLU1_SW_RES, CLU1_SW_SET) and self.engaged and self.hear_taps and not self._acted and
+      if (self._button == CLU1_SW_SET and self.engaged and self.hear_taps and not self._acted and
           self.LATENCY <= held < self.HOLD):
-        self.v_set += FollowParams.TAP_STEP_KPH * (1 if self._button == CLU1_SW_RES else -1)
+        self.v_set -= FollowParams.TAP_STEP_KPH
       self._button = sw_state
       self._since = now
       self._acted = False
@@ -374,7 +375,9 @@ class FakeEcm:
         self._acted = True
 
     dv = 1.08 * FRAME / SECOND
-    if self.engaged:
+    if self.pedal is not None:
+      self.v += self.pedal * FRAME / SECOND
+    elif self.engaged:
       self.v += max(-dv, min(dv, self.v_set - self.v))
     elif self.coasting:
       self.v -= 1.3 * FRAME / SECOND
@@ -385,6 +388,8 @@ class FakeEcm:
 
   def demand(self, cruising_pct: float) -> float:
     """Throttle demand: steps with the set speed the moment a tap registers, closed while not engaged."""
+    if self.pedal is not None:
+      return cruising_pct + 10.
     if not self.engaged:
       return 0.
     return max(0., min(47., cruising_pct + 5. * (self.v_set - self.v)))
@@ -405,6 +410,7 @@ class Sim:
   def step(self, long_press=False):
     self.now += FRAME
     self.signals.brake = self.brake
+    self.signals.gas = self.ecm.pedal is not None
     self.signals.pedal_pct = self.ecm.demand(self.pedal_base)
     if self.brake and self.ecm.engaged:
       self.ecm.drop()
@@ -492,34 +498,6 @@ class TestFollow(unittest.TestCase):
     self.assertTrue(sim.run_until(lambda: sim.ecm.engaged, 30 * SECOND))
     self.assertLessEqual(sim.ecm.v_set, 60. + FollowParams.RECAPTURE_SPEED_MARGIN_KPH + 0.1)
 
-  def test_climb_taps_one_step_at_a_time_up_to_the_driver_speed(self):
-    sim = Sim()
-    sim.engage()
-    sim.plan = FollowPlan(True, 70., -0.5, True)
-    sim.run_until(lambda: sim.cruise.state == CruiseState.COAST, 2 * SECOND)
-    sim.run(8 * SECOND)
-    sim.plan = FollowPlan(True, 80., 0.3, False)
-    sim.run_until(lambda: sim.ecm.engaged, 5 * SECOND)
-    start = sim.ecm.v_set
-    sim.requests.clear()
-
-    sim.run(20 * SECOND)
-    res = sim.requests.count(ButtonRequest.RES)
-    self.assertGreaterEqual(res, 2)
-    self.assertLessEqual(res, FollowParams.PENDING_BURST_TAPS + 3)
-
-    sim.run(120 * SECOND)
-    self.assertGreater(sim.ecm.v_set, start)
-    self.assertLessEqual(sim.ecm.v_set, 80. + FollowParams.TARGET_DEADBAND_KPH)
-    self.assertAlmostEqual(sim.ecm.v_set, some(sim.follow.v_set_kph), delta=0.3)
-
-  def test_climb_never_passes_the_driver_speed(self):
-    sim = Sim()
-    sim.engage()
-    sim.plan = FollowPlan(True, 120., 0.5, False)
-    sim.run(120 * SECOND)
-    self.assertNotIn(ButtonRequest.RES, sim.requests)
-
   def test_trim_down(self):
     sim = Sim()
     sim.engage()
@@ -582,19 +560,6 @@ class TestFollow(unittest.TestCase):
     sim.run(3 * FRAME)
     self.assertIn(ButtonRequest.DECEL, sim.requests)
 
-  def test_turning_back_needs_a_wider_error(self):
-    sim = Sim()
-    sim.engage()
-    sim.plan = FollowPlan(True, 77., -0.1, False)
-    self.assertTrue(sim.run_until(lambda: ButtonRequest.DECEL in sim.requests, 5 * SECOND))
-    sim.run(3 * SECOND)
-    v_set = some(sim.follow.v_set_kph)
-    sim.plan = FollowPlan(True, v_set + FollowParams.TARGET_DEADBAND_KPH + 0.3, 0.1, False)
-    sim.run(FollowParams.REVERSAL_NANOS - 5 * SECOND)
-    self.assertNotIn(ButtonRequest.RES, sim.requests)
-    sim.run(10 * SECOND)
-    self.assertIn(ButtonRequest.RES, sim.requests)
-
   def test_trimming_down_pauses_after_repeated_unheard_taps(self):
     sim = Sim()
     sim.engage()
@@ -609,71 +574,12 @@ class TestFollow(unittest.TestCase):
     sim.run(10 * SECOND)
     self.assertIn(ButtonRequest.DECEL, sim.requests)
 
-  def test_quick_retries_are_bounded(self):
-    sim = Sim()
-    sim.engage()
-    sim.ecm.hear_taps = False
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    sim.follow.v_user_kph = 90.
-    self.assertTrue(sim.run_until(lambda: ButtonRequest.RES in sim.requests, 5 * SECOND))
-    sim.run((FollowParams.QUICK_RETRY_LIMIT + 1) * (TapResponseParams.WINDOW_NANOS + 3 * FRAME))
-    self.assertEqual(1 + FollowParams.QUICK_RETRY_LIMIT, sim.requests.count(ButtonRequest.RES))
-
   def test_no_trim_below_the_ecm_minimum(self):
     sim = Sim(FakeEcm(v_kph=45.), FollowPlan(True, 45., 0., False))
     sim.engage()
     sim.plan = FollowPlan(True, 40., -0.1, False)
     sim.run(30 * SECOND)
     self.assertNotIn(ButtonRequest.DECEL, sim.requests)
-
-  def test_climb_gates(self):
-    cases = {
-      "downshift announced": dict(target_gear=5),
-      "overrev": dict(rpm=FollowParams.KICKDOWN_RPM + 100.),
-      "driver gas": dict(gas=True),
-    }
-    for name, override in cases.items():
-      with self.subTest(name):
-        sim = Sim(FakeEcm(v_kph=80.), FollowPlan(True, 80., 0., False))
-        sim.engage()
-        sim.signals = normal_signals(**override)
-        sim.pedal_base = sim.signals.pedal_pct
-        sim.run(2 * SECOND)
-        sim.follow.v_user_kph = 90.
-        sim.plan = FollowPlan(True, 90., 0.3, False)
-        sim.requests.clear()
-        sim.run(30 * SECOND)
-        self.assertNotIn(ButtonRequest.RES, sim.requests)
-
-  def test_climb_goes_on_uphill_and_at_full_demand(self):
-    sim = Sim(FakeEcm(v_kph=80.), FollowPlan(True, 80., 0., False))
-    sim.engage()
-    sim.signals = normal_signals(long_accel=FollowParams.LONG_ACCEL_BIAS + 0.5)
-    sim.pedal_base = 45.
-    sim.follow.v_user_kph = 90.
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    sim.run(10 * SECOND)
-    self.assertIn(ButtonRequest.RES, sim.requests)
-
-  def test_ordinary_fifth_gear_rpm_does_not_hold_the_climb(self):
-    sim = Sim(FakeEcm(v_kph=100.), FollowPlan(True, 100., 0., False))
-    sim.engage()
-    sim.signals = normal_signals(gear=5, target_gear=5, rpm=FollowParams.KICKDOWN_RPM - 100.)
-    sim.follow.v_user_kph = 110.
-    sim.plan = FollowPlan(True, 110., 0.3, False)
-    sim.run(10 * SECOND)
-    self.assertIn(ButtonRequest.RES, sim.requests)
-
-  def test_climb_allowed_below_top_gear(self):
-    for v_kph, signals in ((55., dict(gear=5, rpm=2200.)), (80., dict(gear=5))):
-      with self.subTest(v_kph=v_kph):
-        sim = Sim(FakeEcm(v_kph=v_kph), FollowPlan(True, v_kph, 0., False))
-        sim.engage()
-        sim.follow.v_user_kph = v_kph + 10.
-        sim.signals = normal_signals(**signals)
-        sim.plan = FollowPlan(True, v_kph + 10., 0.3, False)
-        sim.run(10 * SECOND)
-        self.assertTrue(ButtonRequest.RES in sim.requests)
 
   def test_steady_windows_skip_descents_and_their_aftermath(self):
     sim = Sim()
@@ -684,84 +590,6 @@ class TestFollow(unittest.TestCase):
     sim.follow.estimator.tap(sim.now, 1)
     sim.run(SetSpeedParams.DOWNHILL_RECOVERY_NANOS - 2 * SECOND)
     self.assertTrue(sim.follow.estimator.pending)
-
-  def test_downshift_holds_climb(self):
-    sim = Sim()
-    sim.engage()
-    sim.follow.v_user_kph = 90.
-    sim.signals.gear = 5
-    sim.step()
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
-    self.assertNotIn(ButtonRequest.RES, sim.requests)
-
-  def _res_then(self, **after) -> 'Sim':
-    sim = Sim()
-    sim.engage()
-    sim.follow.v_user_kph = 90.
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    assert sim.run_until(lambda: ButtonRequest.RES in sim.requests, 10 * SECOND)
-    sim.run(CruiseParams.TAP_NANOS + CruiseParams.TAP_GAP_NANOS + FRAME)
-    for k, v in after.items():
-      setattr(sim.signals, k, v)
-    return sim
-
-  def test_kickdown_after_res_holds_the_next_res(self):
-    sim = self._res_then(gear=5)
-    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
-    self.assertEqual(1, sim.requests.count(ButtonRequest.RES))
-    sim.run(5 * SECOND)
-    self.assertGreater(sim.requests.count(ButtonRequest.RES), 1)
-    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
-
-  def test_overrev_holds_the_next_res_until_it_has_passed(self):
-    sim = self._res_then(rpm=FollowParams.KICKDOWN_RPM + 100.)
-    sim.run(SECOND // 2)
-    sim.signals.rpm = 1400.
-    sim.run(FollowParams.KICKDOWN_HOLD_NANOS - SECOND)
-    self.assertEqual(1, sim.requests.count(ButtonRequest.RES))
-    sim.run(5 * SECOND)
-    self.assertGreater(sim.requests.count(ButtonRequest.RES), 1)
-    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
-
-  def test_two_gear_kickdown_after_res_is_taken_back_once(self):
-    for after in (dict(gear=4, target_gear=4), dict(gear=5, target_gear=4)):
-      with self.subTest(after=after):
-        sim = self._res_then(**after)
-        sim.run(3 * SECOND)
-        self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
-        sim.signals.gear = sim.signals.target_gear = 6
-        sim.run(FollowParams.RES_HOLD_AFTER_UNDO_NANOS - 5 * SECOND)
-        self.assertEqual(1, sim.requests.count(ButtonRequest.RES))
-        sim.run(10 * SECOND)
-        self.assertGreater(sim.requests.count(ButtonRequest.RES), 1)
-
-  def test_lasting_overrev_after_res_is_taken_back(self):
-    sim = self._res_then(rpm=FollowParams.RES_UNDO_RPM + 100.)
-    sim.run(3 * SECOND)
-    self.assertEqual(1, sim.requests.count(ButtonRequest.DECEL))
-
-  def test_brief_overrev_or_one_gear_kickdown_is_kept(self):
-    for after in (dict(gear=5), dict(rpm=FollowParams.RES_UNDO_RPM + 100.)):
-      with self.subTest(after=after):
-        sim = self._res_then(**after)
-        if 'rpm' in after:
-          sim.run(FollowParams.RES_UNDO_RPM_NANOS - 5 * FRAME)
-          sim.signals.rpm = 1400.
-        sim.run(3 * SECOND)
-        self.assertNotIn(ButtonRequest.DECEL, sim.requests)
-
-  def test_unheard_res_is_not_taken_back(self):
-    sim = Sim()
-    sim.engage()
-    sim.ecm.hear_taps = False
-    sim.follow.v_user_kph = 90.
-    sim.plan = FollowPlan(True, 90., 0.3, False)
-    self.assertTrue(sim.run_until(lambda: ButtonRequest.RES in sim.requests, 10 * SECOND))
-    sim.run(3 * SECOND)
-    sim.signals.gear = sim.signals.target_gear = 4
-    sim.run(3 * SECOND)
-    self.assertNotIn(ButtonRequest.DECEL, sim.requests)
 
   def test_brake_switches_main_off_and_disarms(self):
     sim = Sim()
@@ -1057,6 +885,133 @@ class TestFollow(unittest.TestCase):
     sim.plan = FollowPlan(True, 20., 0., False)
     sim.run(5 * SECOND)
     self.assertFalse(sim.cruise.armed)
+
+  def test_quick_retries_are_bounded(self):
+    sim = Sim()
+    sim.engage()
+    sim.ecm.hear_taps = False
+    sim.plan = FollowPlan(True, 77., -0.1, False)
+    self.assertTrue(sim.run_until(lambda: ButtonRequest.DECEL in sim.requests, 5 * SECOND))
+    sim.run((FollowParams.QUICK_RETRY_LIMIT + 1) * (TapResponseParams.WINDOW_NANOS + 3 * FRAME))
+    self.assertEqual(1 + FollowParams.QUICK_RETRY_LIMIT, sim.requests.count(ButtonRequest.DECEL))
+
+  def test_speeding_up_is_left_to_the_driver(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.requests.clear()
+    sim.plan = FollowPlan(True, 80., 0.5, False)
+    sim.run(60 * SECOND)
+    self.assertEqual([], sim.requests)
+    self.assertAlmostEqual(70., sim.ecm.v, delta=1.5)
+
+  @staticmethod
+  def _trim_to(sim, v_kph):
+    sim.plan = FollowPlan(True, v_kph, -0.1, False)
+    assert sim.run_until(lambda: sim.ecm.v_set <= v_kph + FollowParams.TARGET_DEADBAND_KPH and sim.follow.estimator.resolved,
+                         120 * SECOND)
+    sim.run(20 * SECOND)
+    sim.requests.clear()
+
+  @staticmethod
+  def _press(sim, rate_kph_s, until):
+    sim.ecm.pedal = rate_kph_s
+    assert sim.run_until(until, 60 * SECOND)
+
+  def test_pedal_to_the_engaged_speed_is_set_while_still_pressed(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.plan = FollowPlan(True, 80., 0.3, False)
+    self._press(sim, 2., lambda: sim.ecm.v >= 79.4)
+    self.assertTrue(sim.run_until(lambda: ButtonRequest.SET in sim.requests, 3 * SECOND))
+    self.assertEqual([ButtonRequest.CANCEL, ButtonRequest.SET], sim.requests)
+    self.assertTrue(sim.until_engaged(3 * SECOND))
+    self.assertAlmostEqual(80., sim.ecm.v_set, delta=1.)
+    sim.ecm.pedal = None
+    sim.run(20 * SECOND)
+    self.assertAlmostEqual(80., sim.ecm.v, delta=1.)
+    self.assertAlmostEqual(sim.ecm.v_set, some(sim.follow.v_set_kph), delta=0.3)
+
+  def test_released_pedal_speed_becomes_the_set_speed(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.plan = FollowPlan(True, 80., 0.3, False)
+    self._press(sim, 2., lambda: sim.ecm.v >= 75.)
+    self.assertEqual([], sim.requests)
+    sim.ecm.pedal = None
+    self.assertTrue(sim.run_until(lambda: sim.cruise.state == CruiseState.COAST, SECOND))
+    self.assertTrue(sim.until_engaged(3 * SECOND))
+    self.assertAlmostEqual(75., sim.ecm.v_set, delta=1.)
+    sim.run(20 * SECOND)
+    self.assertAlmostEqual(sim.ecm.v_set, sim.ecm.v, delta=0.5)
+    self.assertAlmostEqual(80., some(sim.follow.v_user_kph))
+
+  def test_pedal_past_the_engaged_speed_comes_back_to_it(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.plan = FollowPlan(True, 80., 0.3, False)
+    self._press(sim, 2., lambda: sim.ecm.v >= 86.)
+    sim.ecm.pedal = None
+    sim.run(20 * SECOND)
+    self.assertEqual([ButtonRequest.CANCEL, ButtonRequest.SET], sim.requests)
+    self.assertAlmostEqual(80., sim.ecm.v_set, delta=1.)
+    self.assertAlmostEqual(80., sim.ecm.v, delta=1.)
+
+  def test_a_nudge_of_the_pedal_sets_nothing(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.plan = FollowPlan(True, 80., 0.3, False)
+    sim.ecm.pedal = 6.
+    sim.run(FollowParams.CAPTURE_PEDAL_NANOS - 2 * FRAME)
+    sim.ecm.pedal = None
+    sim.run(20 * SECOND)
+    self.assertEqual([], sim.requests)
+    self.assertAlmostEqual(70., sim.ecm.v_set, delta=FollowParams.TARGET_DEADBAND_KPH)
+
+  def test_speed_the_plan_rejects_is_not_set(self):
+    sim = Sim()
+    sim.engage()
+    self._trim_to(sim, 70.)
+    sim.plan = FollowPlan(True, 70., 0., False)
+    self._press(sim, 2., lambda: sim.ecm.v >= 76.)
+    sim.ecm.pedal = None
+    sim.run(20 * SECOND)
+    self.assertEqual([], sim.requests)
+    self.assertAlmostEqual(70., sim.ecm.v, delta=1.)
+
+  def test_nothing_is_tapped_under_the_pedal(self):
+    sim = Sim()
+    sim.engage()
+    sim.ecm.pedal = 0.
+    sim.plan = FollowPlan(True, 70., -0.1, False)
+    sim.run(10 * SECOND)
+    self.assertEqual([], sim.requests)
+    sim.ecm.pedal = None
+    self.assertTrue(sim.run_until(lambda: ButtonRequest.DECEL in sim.requests, 5 * SECOND))
+
+  def test_engaging_under_the_pedal_then_losing_speed_sets_the_lower_speed(self):
+    sim = Sim()
+    sim.ecm.pedal = 0.
+    sim.engage()
+    self.assertAlmostEqual(80., sim.ecm.v_set, delta=0.1)
+    sim.ecm.pedal = -1.
+    sim.run_until(lambda: sim.ecm.v <= 78., 5 * SECOND)
+    sim.ecm.pedal = None
+    self.assertTrue(sim.run_until(lambda: sim.cruise.state == CruiseState.COAST, SECOND))
+    self.assertTrue(sim.until_engaged(3 * SECOND))
+    self.assertAlmostEqual(78., sim.ecm.v_set, delta=0.5)
+
+  def test_display_follows_taps_at_once(self):
+    sim = Sim()
+    sim.engage()
+    self.assertAlmostEqual(80., some(sim.follow.v_set_display_kph), delta=0.3)
+    sim.plan = FollowPlan(True, 77., -0.1, False)
+    self.assertTrue(sim.run_until(lambda: sim.follow.estimator.pending, 5 * SECOND))
+    self.assertAlmostEqual(80. - STEP, some(sim.follow.v_set_display_kph), delta=0.3)
 
 
 class TestFollowPlan(unittest.TestCase):

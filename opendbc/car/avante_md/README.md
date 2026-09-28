@@ -1,7 +1,8 @@
 # Avante MD (2012) port
 
-Steers by sending the VSM1 torque request to the MDPS in place of the ESC, and follows a lead by tapping the stock
-(non-adaptive) cruise buttons.
+Steers by sending the VSM1 torque request to the MDPS in place of the ESC, and slows for a lead by pressing the stock
+(non-adaptive) cruise buttons: SET- and CANCEL lower the speed, SET takes the speed the driver's pedal reached. RES is
+never sent: the ECM answers it with a kickdown, and panda safety rejects it.
 openpilot's side of the fork is `mdpilot/` in the openpilot repo.
 
 ## Upstream registration points
@@ -41,5 +42,4 @@ read what upstream changed in `car/hyundai/`, `car/interfaces.py`, `car/structs.
 
 ## Known issue
 
-Not yet cross-checked between the port and panda: EMS6 cruise lamps, VSM1 normal state, VSM2 driver torque and TCS5
-wheel speed.
+Not yet cross-checked between the port and panda: VSM1 normal state, VSM2 driver torque and TCS5 wheel speed.

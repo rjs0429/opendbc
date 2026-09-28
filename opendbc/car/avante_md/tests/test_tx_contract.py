@@ -15,7 +15,6 @@ from opendbc.safety.tests import common
 from opendbc.safety.tests import test_avante_md as panda
 
 FRAME_US = follow.FRAME // 1000
-EMS6 = 0x260
 CLU1 = 0x4F0
 
 
@@ -38,9 +37,6 @@ class SafetyCheckedSim(follow.Sim):
     self.frame += 1
     self.t_us += FRAME_US
     p.safety.set_timer(self.t_us)
-    ems6 = bytearray(8)
-    ems6[3] = (0x02 if self.ecm.main else 0) | (0x04 if self.ecm.engaged else 0)
-    p.safety.safety_rx_hook(common.make_msg(0, EMS6, 8, bytes(ems6)))
     if self.frame % self.TCS5_EVERY == 0:
       speed = wheel_from_cluster(self.ecm.v) * CV.KPH_TO_MS
       for _ in range(self.TCS5_COPIES):
@@ -94,9 +90,15 @@ class TestTxContract(follow.TestFollow):
 
 
 class TestTxContractAtBusRates(unittest.TestCase):
-  def test_climb_taps_reach_the_ecm(self):
-    rejected = self._rejected("test_climb_taps_one_step_at_a_time_up_to_the_driver_speed")
+  def test_trims_reach_the_ecm(self):
+    rejected = self._rejected("test_trim_down")
     self.assertEqual([], rejected, "panda safety rejected cruise frames the controller sent (nanos, sw_state, sw_main)")
+
+  def test_pedal_speed_reaches_the_ecm(self):
+    for scenario in ("test_pedal_to_the_engaged_speed_is_set_while_still_pressed", "test_released_pedal_speed_becomes_the_set_speed"):
+      with self.subTest(scenario=scenario):
+        rejected = self._rejected(scenario)
+        self.assertEqual([], rejected, "panda safety rejected cruise frames the controller sent (nanos, sw_state, sw_main)")
 
   @staticmethod
   def _rejected(scenario: str) -> list[tuple[int, int, int]]:

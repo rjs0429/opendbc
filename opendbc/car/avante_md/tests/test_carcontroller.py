@@ -86,6 +86,17 @@ class TestAvanteMdCruiseSend(unittest.TestCase):
     self.assertEqual(0., actuators.accel)
     self.assertIsNone(self.CS.follow_v_user_kph)
 
+  def test_disabled_cruise_ignores_the_long_press(self):
+    self.controller.set_cruise_enabled(False)
+    self._step()
+    self._step(long_press=True)
+    for _ in range(10):
+      self.assertEqual([], self._step())
+
+  def test_set_speed_displayed_only_while_engaged(self):
+    self._step()
+    self.assertIsNone(self.controller.cruise_display_kph())
+
   def test_follow_command_lasts_one_cycle(self):
     self.controller.set_follow_command(FollowCommand(20., 0., False))
     self._step()

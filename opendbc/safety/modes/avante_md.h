@@ -11,7 +11,6 @@
 #define AVANTE_MD_VSM2    0x165U
 #define AVANTE_MD_TCS5    0x1F1U
 #define AVANTE_MD_ESP2    0x220U
-#define AVANTE_MD_EMS6    0x260U
 #define AVANTE_MD_SAS1    0x2B0U
 #define AVANTE_MD_TCU1    0x43FU
 #define AVANTE_MD_TCU2    0x440U
@@ -33,7 +32,6 @@
 #define AVANTE_MD_CLU1_PRESS_MAX_US 2000000U
 #define AVANTE_MD_CLU1_MUTE_US      1000000U
 #define AVANTE_MD_CLU1_RELEASE_US   100000U
-#define AVANTE_MD_EMS6_RECENT_US    100000U
 #define AVANTE_MD_OP_VSM1_RECENT_US 30000U
 #define AVANTE_MD_STABILIZE_US      100000U
 
@@ -48,13 +46,12 @@
 
 // ── Cruise switch injection limits ───────────────────────────────────────────
 // CANCEL only lowers engine output and is always allowed. SET engages at the current speed or lowers the
-// set speed. RES has SET's conditions and also needs cruise engaged, so the remembered speed can't be resumed.
+// set speed. RES would raise it and is never allowed.
 #define AVANTE_MD_CLU1_SW_MASK   0x07U
-#define AVANTE_MD_CLU1_SW_RES    1U
 #define AVANTE_MD_CLU1_SW_SET    2U
 #define AVANTE_MD_CLU1_SW_CANCEL 4U
 #define AVANTE_MD_CLU1_MAIN_MASK 0x01U
-// SET and RES are gated to 35..130 km/h, outside the 40..120 the controller uses (m/s * VEHICLE_SPEED_FACTOR)
+// SET is gated to 35..130 km/h, outside the 40..120 the controller uses (m/s * VEHICLE_SPEED_FACTOR)
 #define AVANTE_MD_SET_MIN_SPEED  9722
 #define AVANTE_MD_SET_MAX_SPEED  36111
 
@@ -84,7 +81,6 @@ static AvanteMdRxState avante_md_tcu2_state    = {false, 0U};
 static AvanteMdRxState avante_md_vsm2_state    = {false, 0U};
 static AvanteMdRxState avante_md_sas1_state    = {false, 0U};
 static AvanteMdRxState avante_md_mdps1_state   = {false, 0U};
-static AvanteMdRxState avante_md_ems6_state    = {false, 0U};
 
 // ── Derived vehicle state flags ───────────────────────────────────────────────
 static bool avante_md_vsm1_normal          = false;
@@ -95,7 +91,6 @@ static bool avante_md_tcu2_drive           = false;
 static bool avante_md_doors_closed         = false;
 static bool avante_md_seatbelt_latched     = false;
 static bool avante_md_parking_brake_off    = false;
-static bool avante_md_cruise_set_lamp      = false;
 
 // ── Openpilot VSM1 TX tracking ────────────────────────────────────────────────
 static bool     avante_md_vsm1_tx_seen      = false;
@@ -287,11 +282,6 @@ static bool avante_md_tcu2_in_drive(const CANPacket_t *msg) {
 // CLU1: parking brake released when CF_Clu_ParkBrakeSw == 0 (byte0 bit7).
 static bool avante_md_clu1_parking_brake_off(const CANPacket_t *msg) {
   return (msg->data[0] & 0x80U) == 0U;
-}
-
-// EMS6: stock cruise engaged when CRUISE_LAMP_S == 1 (byte3 bit2).
-static bool avante_md_ems6_set_lamp_on(const CANPacket_t *msg) {
-  return (msg->data[3] & 0x04U) != 0U;
 }
 
 // CLU2: both doors closed when CF_Clu_DrvDrSw == 0 and CF_Clu_AstDrSw == 0.
@@ -551,18 +541,12 @@ static bool avante_md_clu1_tx_msg_valid(const CANPacket_t *msg, uint32_t now) {
   bool valid = (avante_md_clu1_hist_len > 0U) &&
                !avante_md_rx_state_stale(&avante_md_clu1_state, now, AVANTE_MD_CLU1_RX_RECENT_US) &&
                avante_md_clu1_tx_is_copy(msg) &&
-               ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_RES) ||
-                (sw_state == AVANTE_MD_CLU1_SW_SET) || (sw_state == AVANTE_MD_CLU1_SW_CANCEL));
+               ((sw_state == 0U) || (sw_state == AVANTE_MD_CLU1_SW_SET) || (sw_state == AVANTE_MD_CLU1_SW_CANCEL));
 
-  if (valid && ((sw_state == AVANTE_MD_CLU1_SW_SET) || (sw_state == AVANTE_MD_CLU1_SW_RES))) {
+  if (valid && (sw_state == AVANTE_MD_CLU1_SW_SET)) {
     valid = (vehicle_speed.min >= AVANTE_MD_SET_MIN_SPEED) &&
             (vehicle_speed.max <= AVANTE_MD_SET_MAX_SPEED) &&
             avante_md_cruise_vehicle_ok(now);
-  }
-
-  if (valid && (sw_state == AVANTE_MD_CLU1_SW_RES)) {
-    valid = avante_md_cruise_set_lamp &&
-            !avante_md_rx_state_stale(&avante_md_ems6_state, now, AVANTE_MD_EMS6_RECENT_US);
   }
 
   if (valid && avante_md_clu1_tx_seen &&
@@ -614,11 +598,6 @@ static void avante_md_rx_hook(const CANPacket_t *msg) {
 
     if (msg->addr == AVANTE_MD_ESP2) {
       avante_md_update_rx_state(&avante_md_esp2_state, now);
-    }
-
-    if (msg->addr == AVANTE_MD_EMS6) {
-      avante_md_update_rx_state(&avante_md_ems6_state, now);
-      avante_md_cruise_set_lamp = avante_md_ems6_set_lamp_on(msg);
     }
 
     if (msg->addr == AVANTE_MD_WHL_PUL) {
@@ -754,7 +733,6 @@ static void avante_md_reset_state(void) {
   avante_md_reset_rx_state(&avante_md_vsm2_state);
   avante_md_reset_rx_state(&avante_md_sas1_state);
   avante_md_reset_rx_state(&avante_md_mdps1_state);
-  avante_md_reset_rx_state(&avante_md_ems6_state);
 
   avante_md_vsm1_normal       = false;
   avante_md_vsm2_normal       = false;
@@ -764,7 +742,6 @@ static void avante_md_reset_state(void) {
   avante_md_doors_closed      = false;
   avante_md_seatbelt_latched  = false;
   avante_md_parking_brake_off = false;
-  avante_md_cruise_set_lamp   = false;
 
   avante_md_vsm1_tx_seen      = false;
   avante_md_vsm1_tx_last_time = 0U;
@@ -807,9 +784,6 @@ static safety_config avante_md_init(uint16_t param) {
               .ignore_checksum = true, .ignore_counter = true,
               .ignore_quality_flag = true}, {0}, {0}}},
     {.msg = {{AVANTE_MD_ESP2, AVANTE_MD_VEHICLE_BUS, 8, 100U,
-              .ignore_checksum = true, .ignore_counter = true,
-              .ignore_quality_flag = true}, {0}, {0}}},
-    {.msg = {{AVANTE_MD_EMS6, AVANTE_MD_VEHICLE_BUS, 8, 100U,
               .ignore_checksum = true, .ignore_counter = true,
               .ignore_quality_flag = true}, {0}, {0}}},
     {.msg = {{AVANTE_MD_WHL_PUL, AVANTE_MD_VEHICLE_BUS, 8, 100U,
